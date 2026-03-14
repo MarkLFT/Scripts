@@ -49,3 +49,11 @@ or
 Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows.ps1 -OutFile install-zabbix-agent-windows.ps1
 .\install-zabbix-agent-windows.ps1 -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"
 ```
+
+## Zabbix Discovery
+Used to setup automatic discovery of devics that either have the Zabix agent installed, or has SNMP configured using the entered community string.
+
+```
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/setup-zabbix-discovery.sh \
+  -o /tmp/setup-zabbix-discovery.sh && bash /tmp/setup-zabbix-discovery.sh
+```
