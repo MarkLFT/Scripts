@@ -347,7 +347,7 @@ AGENT_ACTION_RESULT=$(zabbix_api "action.create" "{
             {
                 \"conditiontype\": \"21\",
                 \"operator\": \"0\",
-                \"value\": \"0\"
+                \"value\": \"1\"
             }
         ]
     },
@@ -397,7 +397,7 @@ SNMP_ACTION_RESULT=$(zabbix_api "action.create" "{
             {
                 \"conditiontype\": \"21\",
                 \"operator\": \"0\",
-                \"value\": \"0\"
+                \"value\": \"1\"
             }
         ]
     },
