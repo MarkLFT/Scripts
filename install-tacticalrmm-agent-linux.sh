@@ -191,9 +191,12 @@ else
     die "Could not reach TacticalRMM (HTTP $HTTP_CODE) — check the URL"
 fi
 
-# --- Get mesh URL from API ---------------------------------------------------
-MESH_SITE=$(trmm_get "core/settings/" | jq -r '.mesh_site // empty')
-[[ -z "$MESH_SITE" ]] && die "Could not get mesh URL from API"
+# --- Get mesh settings from API ----------------------------------------------
+CORE_SETTINGS=$(trmm_get "core/settings/")
+MESH_SITE=$(echo "$CORE_SETTINGS" | jq -r '.mesh_site // empty')
+MESH_TOKEN=$(echo "$CORE_SETTINGS" | jq -r '.mesh_token // empty')
+[[ -z "$MESH_SITE" ]]  && die "Could not get mesh URL from API"
+[[ -z "$MESH_TOKEN" ]] && die "Could not get mesh token from API"
 MESH_FQDN="${MESH_SITE#https://}"
 MESH_FQDN="${MESH_FQDN#http://}"
 log_ok "Mesh server: $MESH_SITE"
@@ -256,119 +259,47 @@ echo ""
 prompt_confirm "Proceed with installation" || { echo "Aborted."; exit 0; }
 
 # =============================================================================
-# INSTALL MESH AGENT
+# INSTALL AGENT USING NERDY-TECHNICIAN COMMUNITY SCRIPT
 # =============================================================================
+# This script compiles rmmagent from source and handles everything including
+# the mesh agent install. Source: github.com/Nerdy-Technician/LinuxRMM-Script
 
-print_section "Installing Mesh Agent"
+print_section "Installing Agent"
 
 TMPDIR_WORK=$(mktemp -d /tmp/trmm-install-XXXXXX)
 trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
-log_info "Downloading mesh agent installer..."
-MESH_SCRIPT="$TMPDIR_WORK/meshinstall.sh"
-wget -q "https://${MESH_FQDN}/meshagents?script=1" -O "$MESH_SCRIPT" 2>/dev/null \
-    || die "Could not download mesh agent installer from $MESH_SITE"
+# Get the mesh agent URL from your mesh server
+# Build the mesh agent download URL using the token from TRMM API
+# Format: https://mesh.domain/meshagents?id=TOKEN&installflags=2&meshinstall=6
+MESH_AGENT_URL="${MESH_SITE}/meshagents?id=${MESH_TOKEN}&installflags=2&meshinstall=6"
 
-chmod +x "$MESH_SCRIPT"
+log_info "Downloading community install script..."
+COMMUNITY_SCRIPT="$TMPDIR_WORK/rmmagent-linux.sh"
+wget -q "https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/refs/heads/main/rmmagent-linux.sh" \
+    -O "$COMMUNITY_SCRIPT" 2>/dev/null \
+    || die "Could not download community install script from GitHub"
 
-# Pass the mesh server URL as argument so the script connects to the right server
-log_info "Running mesh agent installer..."
-bash "$MESH_SCRIPT" "https://${MESH_FQDN}" >/dev/null 2>&1 \
-    || log_warn "Mesh install returned non-zero — may still be OK"
+chmod +x "$COMMUNITY_SCRIPT"
 
-sleep 2
-if systemctl is-active --quiet meshagent 2>/dev/null || pgrep -x meshagent >/dev/null 2>&1; then
-    log_ok "Mesh agent is running"
-else
-    log_warn "Mesh agent status unclear — continuing with rmmagent install"
+echo ""
+log_info "Running community agent installer..."
+log_info "Note: This will install Go and compile the agent — may take several minutes."
+echo ""
+
+# Run with --simple flag for cleaner output
+bash "$COMMUNITY_SCRIPT" --simple install \
+    "${MESH_AGENT_URL}" \
+    "${TRMM_URL}" \
+    "${CLIENT_ID}" \
+    "${SITE_ID}" \
+    "${AUTH_TOKEN}" \
+    "${AGENT_TYPE}"
+
+INSTALL_EXIT=$?
+if [[ $INSTALL_EXIT -ne 0 ]]; then
+    die "Agent installer exited with code $INSTALL_EXIT"
 fi
-
-# =============================================================================
-# INSTALL RMMAGENT
-# =============================================================================
-
-print_section "Installing TacticalRMM Agent"
-
-# Get latest release info from GitHub and find the correct asset
-log_info "Checking latest rmmagent release..."
-RELEASE_JSON=$(curl -s https://api.github.com/repos/amidaware/rmmagent/releases/latest)
-LATEST_VERSION=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
-
-if [[ -z "$LATEST_VERSION" ]]; then
-    die "Could not determine latest rmmagent version from GitHub API"
-fi
-log_info "Version: $LATEST_VERSION"
-
-# Find the download URL for the correct architecture from the actual release assets
-# Asset names vary by release — look it up rather than guess the format
-AGENT_URL=$(echo "$RELEASE_JSON" | jq -r     --arg arch "$ARCH"     '.assets[] | select(.name | test("linux") and test($arch)) | .browser_download_url'     | head -1)
-
-if [[ -z "$AGENT_URL" ]]; then
-    # List available assets to help diagnose
-    log_warn "Available assets for $LATEST_VERSION:"
-    echo "$RELEASE_JSON" | jq -r '.assets[].name' | sed 's/^/    /'
-    die "Could not find a Linux $ARCH asset in release $LATEST_VERSION"
-fi
-
-log_info "Downloading: $(basename "$AGENT_URL")"
-AGENT_DL="$TMPDIR_WORK/rmmagent-download"
-wget -q "$AGENT_URL" -O "$AGENT_DL" 2>/dev/null     || die "Could not download rmmagent from: $AGENT_URL"
-
-# Handle both tar.gz and plain binary formats
-log_info "Installing rmmagent binary..."
-if file "$AGENT_DL" | grep -q 'gzip\|tar'; then
-    tar -xzf "$AGENT_DL" -C "$TMPDIR_WORK/"
-    AGENT_BIN=$(find "$TMPDIR_WORK" -name "rmmagent" -type f | head -1)
-elif file "$AGENT_DL" | grep -q 'ELF'; then
-    AGENT_BIN="$AGENT_DL"
-else
-    # Unknown format — try treating as binary directly
-    AGENT_BIN="$AGENT_DL"
-fi
-
-[[ -z "$AGENT_BIN" ]] && die "rmmagent binary not found in downloaded file"
-
-mkdir -p /usr/local/bin
-cp "$AGENT_BIN" /usr/local/bin/rmmagent
-chmod +x /usr/local/bin/rmmagent
-log_ok "rmmagent installed to /usr/local/bin/rmmagent"
-
-# --- Register agent with TRMM ------------------------------------------------
-log_info "Registering agent with TacticalRMM..."
-/usr/local/bin/rmmagent \
-    -m install \
-    -api "${TRMM_URL}" \
-    -client-id "${CLIENT_ID}" \
-    -site-id "${SITE_ID}" \
-    -agent-type "${AGENT_TYPE}" \
-    -auth "${AUTH_TOKEN}" \
-    2>&1
-
-# --- Create systemd service --------------------------------------------------
-log_info "Creating systemd service..."
-cat > /etc/systemd/system/tacticalagent.service <<EOF
-[Unit]
-Description=Tactical RMM Linux Agent
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/rmmagent -m svc
-User=root
-Group=root
-Restart=always
-RestartSec=5s
-LimitNOFILE=1000000
-KillMode=process
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable tacticalagent --quiet
-systemctl restart tacticalagent
-sleep 3
 
 # =============================================================================
 # VERIFY
