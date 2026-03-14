@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 # =============================================================================
 # TacticalRMM - Zabbix Agent 2 Install / Update Script (Linux)
@@ -13,12 +14,11 @@
 set -eo pipefail
 
 # --- Arguments ---------------------------------------------------------------
-# Strip surrounding single quotes that TacticalRMM adds when passing
-# shell script arguments via variable substitution
-ZABBIX_PROXY="${1:-}"; ZABBIX_PROXY="${ZABBIX_PROXY//'/}"
-ZABBIX_SERVER="${2:-}"; ZABBIX_SERVER="${ZABBIX_SERVER//'/}"
-DISCORD_WEBHOOK="${3:-}"; DISCORD_WEBHOOK="${DISCORD_WEBHOOK//'/}"
-ZABBIX_VERSION="${4:-}"; ZABBIX_VERSION="${ZABBIX_VERSION//'/}"
+# TacticalRMM wraps shell script arguments in single quotes — strip them
+ZABBIX_PROXY=$(echo "${1:-}"    | tr -d "'")
+ZABBIX_SERVER=$(echo "${2:-}"   | tr -d "'")
+DISCORD_WEBHOOK=$(echo "${3:-}" | tr -d "'")
+ZABBIX_VERSION=$(echo "${4:-}"  | tr -d "'")
 AGENT_CONF="/etc/zabbix/zabbix_agent2.conf"
 AGENT_CONF_D="/etc/zabbix/zabbix_agent2.d"
 
