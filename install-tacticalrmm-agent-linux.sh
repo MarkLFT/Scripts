@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
 # TacticalRMM Agent Installer — Linux (Ubuntu / Debian)
+# Community licence edition — no signed agent required.
 #
-# Prompts for all sensitive values — safe for public hosting.
+# Install flow:
+#   1. Connects to your TRMM API to list clients and sites
+#   2. Gets mesh URL automatically from API
+#   3. Prompts for the auth token (generate in TRMM UI)
+#   4. Downloads and installs the mesh agent
+#   5. Downloads and installs the rmmagent binary
+#
+# Auth token: In TacticalRMM → Agents → Install Agent → select Windows
+#             → Manual → copy the value shown after --auth
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-linux.sh \
@@ -44,11 +53,22 @@ die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 [[ "$ID" == "ubuntu" || "$ID" == "debian" ]] \
     || die "Unsupported OS: $ID (Ubuntu and Debian only)"
 
+# --- Architecture ------------------------------------------------------------
+case "$(uname -m)" in
+    x86_64)  ARCH="amd64" ;;
+    aarch64) ARCH="arm64" ;;
+    armv6l)  ARCH="armv6" ;;
+    i386|i686) ARCH="x86" ;;
+    *) die "Unsupported architecture: $(uname -m)" ;;
+esac
+
 # --- Dependencies ------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-    log_info "Installing jq..."
-    apt-get install -y -q jq >/dev/null 2>&1 || die "Could not install jq"
-fi
+for pkg in curl wget jq; do
+    if ! command -v "$pkg" >/dev/null 2>&1; then
+        log_info "Installing $pkg..."
+        apt-get install -y -q "$pkg" >/dev/null 2>&1 || die "Could not install $pkg"
+    fi
+done
 
 # =============================================================================
 # PROMPT HELPERS
@@ -126,11 +146,8 @@ pick_from_list() {
 }
 
 # =============================================================================
-# TRMM API HELPERS
+# TRMM API HELPER
 # =============================================================================
-# TacticalRMM REST API — no path prefix, endpoints are at the root.
-# e.g. https://api.yourdomain.com/clients/
-# Docs: https://docs.tacticalrmm.com/functions/api/
 
 TRMM_URL=""
 TRMM_TOKEN=""
@@ -140,15 +157,6 @@ trmm_get() {
     curl -s -X GET "${TRMM_URL}/${endpoint}" \
         -H "Content-Type: application/json" \
         -H "X-API-KEY: ${TRMM_TOKEN}" \
-        2>/dev/null
-}
-
-trmm_post() {
-    local endpoint="$1" body="$2"
-    curl -s -X POST "${TRMM_URL}/${endpoint}" \
-        -H "Content-Type: application/json" \
-        -H "X-API-KEY: ${TRMM_TOKEN}" \
-        -d "$body" \
         2>/dev/null
 }
 
@@ -172,12 +180,9 @@ SECRET_REPLY=""
 prompt_secret "API Key"
 TRMM_TOKEN="$SECRET_REPLY"
 
-# Verify connection
 log_info "Testing connection..."
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "X-API-KEY: ${TRMM_TOKEN}" \
-    "${TRMM_URL}/clients/" 2>/dev/null)
-
+    -H "X-API-KEY: ${TRMM_TOKEN}" "${TRMM_URL}/clients/" 2>/dev/null)
 if [[ "$HTTP_CODE" == "200" ]]; then
     log_ok "Connected successfully"
 elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
@@ -185,6 +190,13 @@ elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
 else
     die "Could not reach TacticalRMM (HTTP $HTTP_CODE) — check the URL"
 fi
+
+# --- Get mesh URL from API ---------------------------------------------------
+MESH_SITE=$(trmm_get "core/settings/" | jq -r '.mesh_site // empty')
+[[ -z "$MESH_SITE" ]] && die "Could not get mesh URL from API"
+MESH_FQDN="${MESH_SITE#https://}"
+MESH_FQDN="${MESH_FQDN#http://}"
+log_ok "Mesh server: $MESH_SITE"
 
 # --- Select client -----------------------------------------------------------
 print_section "Client"
@@ -199,12 +211,11 @@ CLIENT_NAME="$REPLY"
 CLIENT_ID="$REPLY_ID"
 log_ok "Client: $CLIENT_NAME (ID: $CLIENT_ID)"
 
-# --- Select site -------------------------------------------------------------
+# --- Select site (embedded in clients response) ------------------------------
 print_section "Site"
 log_info "Loading sites for $CLIENT_NAME..."
-# Sites are embedded in the clients response — extract from already-fetched data
-SITES_JSON=$(echo "$CLIENTS_JSON" | jq --argjson cid "${CLIENT_ID}"     '[.[] | select(.id == $cid) | .sites[]]')
-
+SITES_JSON=$(echo "$CLIENTS_JSON" | jq --argjson cid "${CLIENT_ID}" \
+    '[.[] | select(.id == $cid) | .sites[]]')
 SITE_COUNT=$(echo "$SITES_JSON" | jq 'length')
 [[ "$SITE_COUNT" -eq 0 ]] && die "No sites found for $CLIENT_NAME — create a site first"
 
@@ -221,113 +232,139 @@ prompt_choice "Agent type" "Server" "Workstation"
 AGENT_TYPE="${REPLY,,}"
 log_info "Type: $REPLY"
 
+# --- Auth token --------------------------------------------------------------
+print_section "Auth Token"
+echo -e "  ${YELLOW}In TacticalRMM: Agents → Install Agent${RESET}"
+echo -e "  ${YELLOW}Select: Windows, Manual installation method${RESET}"
+echo -e "  ${YELLOW}Click 'Show Manual Instructions' and copy the value after --auth${RESET}"
+echo ""
+SECRET_REPLY=""
+prompt_secret "Auth token"
+AUTH_TOKEN="$SECRET_REPLY"
+
 # --- Summary & confirm -------------------------------------------------------
 print_section "Configuration Summary"
 echo ""
-echo -e "  ${BOLD}TRMM Server:${RESET}   $TRMM_URL"
-echo -e "  ${BOLD}Client:${RESET}        $CLIENT_NAME"
-echo -e "  ${BOLD}Site:${RESET}          $SITE_NAME"
-echo -e "  ${BOLD}Agent type:${RESET}    $AGENT_TYPE"
-echo -e "  ${BOLD}OS:${RESET}            $ID $VERSION_ID"
+echo -e "  ${BOLD}TRMM API:${RESET}     $TRMM_URL"
+echo -e "  ${BOLD}Mesh server:${RESET}  $MESH_SITE"
+echo -e "  ${BOLD}Client:${RESET}       $CLIENT_NAME (ID: $CLIENT_ID)"
+echo -e "  ${BOLD}Site:${RESET}         $SITE_NAME (ID: $SITE_ID)"
+echo -e "  ${BOLD}Agent type:${RESET}   $AGENT_TYPE"
+echo -e "  ${BOLD}Architecture:${RESET} $ARCH"
 echo ""
 
 prompt_confirm "Proceed with installation" || { echo "Aborted."; exit 0; }
 
 # =============================================================================
-# GENERATE INSTALLER VIA DEPLOYMENT API
+# INSTALL MESH AGENT
 # =============================================================================
 
-print_section "Generating Installer"
+print_section "Installing Mesh Agent"
 
-# Create a deployment token via the TRMM API.
-# This is equivalent to clicking Agents > Install Agent in the UI.
-# The deployment returns a URL used to download the configured installer.
-DEPLOY_BODY=$(cat <<EOF
-{
-    "site": ${SITE_ID},
-    "agent_type": "${AGENT_TYPE}",
-    "expires": null,
-    "install_flags": {
-        "rdp": false,
-        "ping": true,
-        "power": false
-    }
-}
-EOF
-)
+TMPDIR_WORK=$(mktemp -d /tmp/trmm-install-XXXXXX)
+trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
-log_info "Creating deployment token..."
-DEPLOY_RESULT=$(trmm_post "clients/${CLIENT_ID}/deployments/" "$DEPLOY_BODY")
-DEPLOY_URL=$(echo "$DEPLOY_RESULT" | jq -r '.url // empty' 2>/dev/null)
+log_info "Downloading mesh agent installer..."
+MESH_SCRIPT="$TMPDIR_WORK/meshinstall.sh"
+wget -q "https://${MESH_FQDN}/meshagents?script=1" -O "$MESH_SCRIPT" 2>/dev/null \
+    || die "Could not download mesh agent installer from $MESH_SITE"
 
-if [[ -z "$DEPLOY_URL" ]]; then
-    # Deployment API may not be accessible — fall back to the
-    # generated installer endpoint which TRMM also exposes.
-    log_warn "Deployment API did not return a URL — trying direct installer endpoint..."
+chmod +x "$MESH_SCRIPT"
 
-    ARCH="amd64"
-    [[ "$(uname -m)" == "aarch64" ]] && ARCH="arm64"
+# Pass the mesh server URL as argument so the script connects to the right server
+log_info "Running mesh agent installer..."
+bash "$MESH_SCRIPT" "https://${MESH_FQDN}" >/dev/null 2>&1 \
+    || log_warn "Mesh install returned non-zero — may still be OK"
 
-    INSTALLER_URL="${TRMM_URL}/agents/installer/?client_id=${CLIENT_ID}&site_id=${SITE_ID}&agent_type=${AGENT_TYPE}&arch=${ARCH}&plat=linux&token=${TRMM_TOKEN}"
-    INSTALLER_PATH="/tmp/trmm-agent-$$.sh"
-
-    HTTP_CODE=$(curl -s -w "%{http_code}" -o "$INSTALLER_PATH" "$INSTALLER_URL" 2>/dev/null)
-    if [[ "$HTTP_CODE" != "200" ]] || ! head -1 "$INSTALLER_PATH" 2>/dev/null | grep -q '^#!'; then
-        rm -f "$INSTALLER_PATH"
-        echo ""
-        echo -e "  ${YELLOW}Automatic installer generation is not available via the API.${RESET}"
-        echo -e "  ${YELLOW}Please generate an installer manually:${RESET}"
-        echo ""
-        echo -e "    1. In TacticalRMM: Agents → Install Agent"
-        echo -e "    2. Select client: ${CYAN}${CLIENT_NAME}${RESET}, site: ${CYAN}${SITE_NAME}${RESET}"
-        echo -e "    3. Select: Linux, ${AGENT_TYPE}"
-        echo -e "    4. Copy the generated script and run it on this host"
-        echo ""
-        exit 1
-    fi
+sleep 2
+if systemctl is-active --quiet meshagent 2>/dev/null || pgrep -x meshagent >/dev/null 2>&1; then
+    log_ok "Mesh agent is running"
 else
-    log_info "Downloading installer from deployment URL..."
-    INSTALLER_PATH="/tmp/trmm-agent-$$.sh"
-    HTTP_CODE=$(curl -s -w "%{http_code}" -o "$INSTALLER_PATH" "$DEPLOY_URL" 2>/dev/null)
-    if [[ "$HTTP_CODE" != "200" ]]; then
-        rm -f "$INSTALLER_PATH"
-        die "Failed to download installer (HTTP $HTTP_CODE)"
-    fi
+    log_warn "Mesh agent status unclear — continuing with rmmagent install"
 fi
 
-# Sanity check
-if ! head -1 "$INSTALLER_PATH" 2>/dev/null | grep -q '^#!'; then
-    rm -f "$INSTALLER_PATH"
-    die "Downloaded file does not look like a shell script — check API key permissions"
+# =============================================================================
+# INSTALL RMMAGENT
+# =============================================================================
+
+print_section "Installing TacticalRMM Agent"
+
+# Get latest release version from GitHub
+log_info "Checking latest rmmagent release..."
+LATEST_VERSION=$(curl -s https://api.github.com/repos/amidaware/rmmagent/releases/latest \
+    | jq -r '.tag_name' 2>/dev/null)
+
+if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
+    log_warn "Could not determine latest version — using v2.9.1"
+    LATEST_VERSION="v2.9.1"
 fi
+log_info "Version: $LATEST_VERSION"
 
-chmod +x "$INSTALLER_PATH"
-log_ok "Installer ready"
+AGENT_URL="https://github.com/amidaware/rmmagent/releases/download/${LATEST_VERSION}/rmmagent-linux-${ARCH}.tar.gz"
+AGENT_TAR="$TMPDIR_WORK/rmmagent.tar.gz"
 
-# =============================================================================
-# INSTALL
-# =============================================================================
+log_info "Downloading rmmagent ($ARCH)..."
+wget -q "$AGENT_URL" -O "$AGENT_TAR" 2>/dev/null \
+    || die "Could not download rmmagent from GitHub: $AGENT_URL"
 
-print_section "Installing Agent"
-log_info "Running TacticalRMM agent installer..."
-echo ""
+log_info "Installing rmmagent binary..."
+tar -xzf "$AGENT_TAR" -C "$TMPDIR_WORK/"
+AGENT_BIN=$(find "$TMPDIR_WORK" -name "rmmagent" -type f | head -1)
+[[ -z "$AGENT_BIN" ]] && die "rmmagent binary not found in downloaded archive"
 
-bash "$INSTALLER_PATH"
-INSTALL_EXIT=$?
-rm -f "$INSTALLER_PATH"
+mkdir -p /usr/local/bin
+cp "$AGENT_BIN" /usr/local/bin/rmmagent
+chmod +x /usr/local/bin/rmmagent
+log_ok "rmmagent installed to /usr/local/bin/rmmagent"
 
-[[ $INSTALL_EXIT -ne 0 ]] && die "Installer exited with code $INSTALL_EXIT"
+# --- Register agent with TRMM ------------------------------------------------
+log_info "Registering agent with TacticalRMM..."
+/usr/local/bin/rmmagent \
+    -m install \
+    -api "${TRMM_URL}" \
+    -client-id "${CLIENT_ID}" \
+    -site-id "${SITE_ID}" \
+    -agent-type "${AGENT_TYPE}" \
+    -auth "${AUTH_TOKEN}" \
+    2>&1
 
-# --- Verify ------------------------------------------------------------------
-print_section "Verifying"
+# --- Create systemd service --------------------------------------------------
+log_info "Creating systemd service..."
+cat > /etc/systemd/system/tacticalagent.service <<EOF
+[Unit]
+Description=Tactical RMM Linux Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rmmagent -m svc
+User=root
+Group=root
+Restart=always
+RestartSec=5s
+LimitNOFILE=1000000
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable tacticalagent --quiet
+systemctl restart tacticalagent
 sleep 3
+
+# =============================================================================
+# VERIFY
+# =============================================================================
+
+print_section "Verifying"
 
 if systemctl is-active --quiet tacticalagent 2>/dev/null; then
     log_ok "tacticalagent service is running"
-elif systemctl is-active --quiet mesh-agent 2>/dev/null; then
-    log_ok "mesh-agent service is running"
 else
-    log_warn "Could not verify service — check: systemctl status tacticalagent"
+    systemctl status tacticalagent --no-pager || true
+    die "tacticalagent failed to start — check: journalctl -u tacticalagent -n 50"
 fi
 
 # =============================================================================
