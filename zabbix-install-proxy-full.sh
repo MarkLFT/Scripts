@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Zabbix Proxy - Interactive Install Script (Debian)
+# Zabbix Proxy - Interactive Installer (Debian) — Full Edition
 # Supports: Debian 11 (Bullseye), Debian 12 (Bookworm), Debian 13 (Trixie)
 #
+# Prompts for all settings — nothing is hardcoded.
+#
 # Usage:
-#   chmod +x install-zabbix-proxy.sh
-#   sudo ./install-zabbix-proxy.sh
+#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-proxy-full.sh | sudo bash
+#   sudo ./install-zabbix-proxy-full.sh
 # =============================================================================
 
 set -euo pipefail
@@ -17,7 +19,8 @@ CYAN='\033[0;36m'; BOLD='\033[1m';     RESET='\033[0m'
 print_header() {
     echo ""
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${CYAN}${BOLD}║        Zabbix Proxy - Interactive Installer          ║${RESET}"
+    echo -e "${CYAN}${BOLD}║     Zabbix Proxy - Interactive Installer             ║${RESET}"
+    echo -e "${CYAN}${BOLD}║     Full Edition — all options configurable          ║${RESET}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════╝${RESET}"
     echo ""
 }
@@ -34,20 +37,18 @@ log_warn()  { echo -e "  ${YELLOW}⚠${RESET}  $1" >&2; }
 die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 
 # --- Reconnect prompts to terminal -------------------------------------------
-# When piped via curl | bash, stdin (fd 0) is the pipe that bash uses to read
-# the script itself. Replacing stdin with /dev/tty (exec < /dev/tty) causes
-# bash to lose the rest of the script and freeze.
-# Instead, open /dev/tty on fd 3 and direct all read calls there, leaving
-# fd 0 untouched so bash can keep reading the script from the pipe.
+# When piped via curl | bash, stdin (fd 0) is the pipe bash reads the script
+# from. Opening /dev/tty on fd 3 instead leaves fd 0 untouched so bash keeps
+# reading the script, while all read prompts use fd 3 (the terminal).
 if [[ -t 0 ]]; then
     TTY_FD=0
 else
-    exec 3</dev/tty || { echo "ERROR: Cannot open /dev/tty — run the script directly: sudo bash install-zabbix-proxy.sh" >&2; exit 1; }
+    exec 3</dev/tty || die "Cannot open /dev/tty — run directly: sudo bash install-zabbix-proxy-full.sh"
     TTY_FD=3
 fi
 
 # --- Must run as root --------------------------------------------------------
-[[ $EUID -ne 0 ]] && die "Run as root: sudo ./install-zabbix-proxy.sh"
+[[ $EUID -ne 0 ]] && die "Run as root: sudo ./install-zabbix-proxy-full.sh"
 
 # --- Detect Debian version ---------------------------------------------------
 [[ -f /etc/os-release ]] || die "Cannot detect OS — /etc/os-release missing"
@@ -69,11 +70,11 @@ prompt_value() {
     local label="$1" default="$2"
     REPLY=""
     if [[ -n "$default" ]]; then
-        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD
+        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD || true
         [[ -z "$REPLY" ]] && REPLY="$default"
     else
         while [[ -z "$REPLY" ]]; do
-            read -rp "  ${label}: " REPLY <&$TTY_FD
+            read -rp "  ${label}: " REPLY <&$TTY_FD || true
         done
     fi
 }
@@ -82,7 +83,7 @@ prompt_secret() {
     local label="$1"
     SECRET_REPLY=""
     while [[ -z "$SECRET_REPLY" ]]; do
-        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD
+        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD || true
         echo ""
         [[ -z "$SECRET_REPLY" ]] && echo -e "  ${RED}Value cannot be empty.${RESET}"
     done
@@ -91,7 +92,7 @@ prompt_secret() {
 prompt_confirm() {
     local question="$1" default="${2:-y}"
     local prompt; [[ "$default" == "y" ]] && prompt="[Y/n]" || prompt="[y/N]"
-    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD
+    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD || true
     ans="${ans:-$default}"
     [[ "${ans,,}" == "y" ]]
 }
@@ -105,7 +106,7 @@ prompt_choice() {
     done
     local choice
     while true; do
-        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD
+        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD || true
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             REPLY="${options[$((choice-1))]}"; return 0
         fi
@@ -193,20 +194,20 @@ case "$DB_TYPE" in
     MySQL)
         PROXY_PACKAGE="zabbix-proxy-mysql"
         DB_SETUP_NEEDED=true
-        REPLY=""; prompt_value "MySQL host" "localhost";   DB_HOST="$REPLY"
-        REPLY=""; prompt_value "MySQL port" "3306";        DB_PORT="$REPLY"
-        REPLY=""; prompt_value "Database name" "zabbix_proxy"; DB_NAME="$REPLY"
-        REPLY=""; prompt_value "Database user" "zabbix";   DB_USER="$REPLY"
-        SECRET_REPLY=""; prompt_secret "Database password"; DB_PASS="$SECRET_REPLY"
+        REPLY=""; prompt_value "MySQL host" "localhost";        DB_HOST="$REPLY"
+        REPLY=""; prompt_value "MySQL port" "3306";             DB_PORT="$REPLY"
+        REPLY=""; prompt_value "Database name" "zabbix_proxy";  DB_NAME="$REPLY"
+        REPLY=""; prompt_value "Database user" "zabbix";        DB_USER="$REPLY"
+        SECRET_REPLY=""; prompt_secret "Database password";     DB_PASS="$SECRET_REPLY"
         ;;
     PostgreSQL)
         PROXY_PACKAGE="zabbix-proxy-pgsql"
         DB_SETUP_NEEDED=true
-        REPLY=""; prompt_value "PostgreSQL host" "localhost"; DB_HOST="$REPLY"
-        REPLY=""; prompt_value "PostgreSQL port" "5432";      DB_PORT="$REPLY"
-        REPLY=""; prompt_value "Database name" "zabbix_proxy"; DB_NAME="$REPLY"
-        REPLY=""; prompt_value "Database user" "zabbix";      DB_USER="$REPLY"
-        SECRET_REPLY=""; prompt_secret "Database password";   DB_PASS="$SECRET_REPLY"
+        REPLY=""; prompt_value "PostgreSQL host" "localhost";   DB_HOST="$REPLY"
+        REPLY=""; prompt_value "PostgreSQL port" "5432";        DB_PORT="$REPLY"
+        REPLY=""; prompt_value "Database name" "zabbix_proxy";  DB_NAME="$REPLY"
+        REPLY=""; prompt_value "Database user" "zabbix";        DB_USER="$REPLY"
+        SECRET_REPLY=""; prompt_secret "Database password";     DB_PASS="$SECRET_REPLY"
         ;;
 esac
 
@@ -245,10 +246,10 @@ echo -e "  Defaults shown are suitable for a small site (~12 agents)."
 echo -e "  Increase pollers and preprocessors for larger deployments."
 echo ""
 
-REPLY=""; prompt_value "Start pollers" "3";                  START_POLLERS="$REPLY"
-REPLY=""; prompt_value "Start preprocessing workers" "2";    START_PREPROCESSORS="$REPLY"
-REPLY=""; prompt_value "Start HTTP pollers" "1";             START_HTTP_POLLERS="$REPLY"
-REPLY=""; prompt_value "Start IPMI pollers (0 = disabled)" "0"; START_IPMI_POLLERS="$REPLY"
+REPLY=""; prompt_value "Start pollers" "3";                                                        START_POLLERS="$REPLY"
+REPLY=""; prompt_value "Start preprocessing workers" "2";                                          START_PREPROCESSORS="$REPLY"
+REPLY=""; prompt_value "Start HTTP pollers" "1";                                                   START_HTTP_POLLERS="$REPLY"
+REPLY=""; prompt_value "Start IPMI pollers (0 = disabled)" "0";                                   START_IPMI_POLLERS="$REPLY"
 REPLY=""; prompt_value "Config frequency in seconds (how often proxy fetches config from server)" "300"; CONFIG_FREQUENCY="$REPLY"
 REPLY=""; prompt_value "Data sender frequency in seconds (how often proxy flushes data to server)" "5";  DATA_SENDER_FREQUENCY="$REPLY"
 REPLY=""; prompt_value "Local buffer in seconds (hold data if server unreachable)" "3600";               PROXY_LOCAL_BUFFER="$REPLY"
@@ -295,8 +296,9 @@ ZABBIX_REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/debian
 ZABBIX_REPO_URL_ALT="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_${ZABBIX_VERSION}+debian_all.deb"
 
 TMP_DEB=$(mktemp /tmp/zabbix-release-XXXXXX.deb)
-log_info "Downloading Zabbix ${ZABBIX_VERSION} release package..."
+trap 'rm -f "$TMP_DEB"' EXIT
 
+log_info "Downloading Zabbix ${ZABBIX_VERSION} release package..."
 if ! curl -fsSL "$ZABBIX_REPO_URL" -o "$TMP_DEB" 2>/dev/null; then
     log_warn "Primary URL failed, trying fallback..."
     curl -fsSL "$ZABBIX_REPO_URL_ALT" -o "$TMP_DEB" \
@@ -304,7 +306,6 @@ if ! curl -fsSL "$ZABBIX_REPO_URL" -o "$TMP_DEB" 2>/dev/null; then
 fi
 
 dpkg -i "$TMP_DEB" >/dev/null 2>&1 || true
-rm -f "$TMP_DEB"
 apt-get update -qq
 log_ok "Repository added"
 
@@ -404,7 +405,6 @@ PROXY_PID="/run/zabbix/zabbix_proxy.pid"
 mkdir -p /var/log/zabbix
 chown zabbix:zabbix /var/log/zabbix
 
-# Database block
 if [[ "$DB_TYPE" == "SQLite3" ]]; then
     DB_BLOCK="DBName=${SQLITE_DB_PATH}"
 else
@@ -415,7 +415,6 @@ DBUser=${DB_USER}
 DBPassword=${DB_PASS}"
 fi
 
-# PSK block
 if [[ "$USE_PSK" == "true" ]]; then
     PSK_BLOCK="TLSConnect=psk
 TLSAccept=psk
@@ -432,48 +431,36 @@ cat > "$PROXY_CONF" <<EOF
 # Generated $(date)
 # =============================================================================
 
-### Identity
 Hostname=${PROXY_HOSTNAME}
-
-### Mode (0 = Active, 1 = Passive)
 ProxyMode=${PROXY_MODE}
 
-### Zabbix Server
 Server=${ZABBIX_SERVER}
 ServerPort=${ZABBIX_SERVER_PORT}
 
-### Listen
 ListenIP=0.0.0.0
 ListenPort=${PROXY_PORT}
 
-### Logging
 LogFile=${PROXY_LOG}
 LogFileSize=20
 DebugLevel=3
 PidFile=${PROXY_PID}
 
-### Database
 ${DB_BLOCK}
 
-### Encryption
 ${PSK_BLOCK}
 
-### Pollers
 StartPollers=${START_POLLERS}
 StartIPMIPollers=${START_IPMI_POLLERS}
 StartPreprocessingWorkers=${START_PREPROCESSORS}
 StartHTTPPollers=${START_HTTP_POLLERS}
 StartJavaPollers=0
 
-### Frequency
 ProxyConfigFrequency=${CONFIG_FREQUENCY}
 ProxyDataSenderFrequency=${DATA_SENDER_FREQUENCY}
 
-### Buffering
 ProxyLocalBuffer=${PROXY_LOCAL_BUFFER}
 ProxyOfflineBuffer=${PROXY_LOCAL_BUFFER}
 
-### Timeouts
 Timeout=10
 EOF
 
@@ -501,12 +488,12 @@ if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: activ
     log_info "UFW is active."
     if [[ "$PROXY_MODE" -eq 0 ]]; then
         log_info "Active mode — proxy dials OUT, no inbound rule needed for normal operation."
-        if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for passive checks or status queries)" "n"; then
+        if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for status queries or passive checks)" "n"; then
             ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null
             log_ok "UFW rule added for port ${PROXY_PORT}/tcp"
         fi
     else
-        log_info "Passive mode — server will connect inbound to this proxy."
+        log_info "Passive mode — Zabbix server will connect inbound to this proxy."
         if prompt_confirm "Open port ${PROXY_PORT}/tcp (required for passive mode)"; then
             ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null
             log_ok "UFW rule added for port ${PROXY_PORT}/tcp"
