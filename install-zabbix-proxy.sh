@@ -39,6 +39,14 @@ log_info()  { echo -e "  ${YELLOW}ℹ${RESET}  $1"; }
 log_warn()  { echo -e "  ${YELLOW}⚠${RESET}  $1" >&2; }
 die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 
+# --- Reconnect stdin to terminal ---------------------------------------------
+# When the script is piped via curl | bash, stdin is the pipe and read
+# commands receive EOF immediately. Redirecting to /dev/tty restores
+# interactive input so all prompts work correctly.
+if [[ ! -t 0 ]]; then
+    exec < /dev/tty || die "Cannot open /dev/tty for interactive input. Run the script directly instead of piping."
+fi
+
 # --- Must run as root --------------------------------------------------------
 [[ $EUID -ne 0 ]] && die "Run as root: sudo ./install-zabbix-proxy.sh"
 
