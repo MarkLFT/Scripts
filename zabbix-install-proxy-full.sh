@@ -422,8 +422,7 @@ cat > "$PROXY_CONF" <<EOF
 Hostname=${PROXY_HOSTNAME}
 ProxyMode=${PROXY_MODE}
 
-Server=${ZABBIX_SERVER}
-ServerPort=${ZABBIX_SERVER_PORT}
+Server=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
 
 ListenIP=0.0.0.0
 ListenPort=${PROXY_PORT}
@@ -444,14 +443,12 @@ StartHTTPPollers=${START_HTTP_POLLERS}
 StartJavaPollers=0
 
 ProxyConfigFrequency=${CONFIG_FREQUENCY}
-ProxyDataSenderFrequency=${DATA_SENDER_FREQUENCY}
+DataSenderFrequency=${DATA_SENDER_FREQUENCY}
 
-# Zabbix 7.x uses hybrid buffer mode by default (memory + disk fallback).
-# ProxyLocalBuffer must be 0 when ProxyBufferMode=hybrid or memory.
+# Zabbix 7.x hybrid buffer mode: data held in memory, flushed to disk on stop/full.
+# ProxyLocalBuffer and ProxyOfflineBuffer must NOT be set when ProxyBufferMode=hybrid.
 ProxyBufferMode=hybrid
 ProxyMemoryBufferSize=64M
-ProxyLocalBuffer=0
-ProxyOfflineBuffer=1
 
 Timeout=10
 EOF
