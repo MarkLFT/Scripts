@@ -141,8 +141,11 @@ else
 fi
 
 # --- Add Zabbix repository ---------------------------------------------------
-ZABBIX_RELEASE_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/${REPO_OS}/pool/main/z/zabbix-release/zabbix-release_latest_${ZABBIX_VERSION}+${REPO_OS}${OS_VERSION%.*}_all.deb"
-ZABBIX_RELEASE_URL_ALT="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/${REPO_OS}/pool/main/z/zabbix-release/zabbix-release_latest_${ZABBIX_VERSION}+${REPO_OS}_all.deb"
+# Official format: zabbix-release_latest+ubuntu22.04_all.deb
+# Note: no version number in the filename, full OS version (e.g. 22.04 not 22)
+ZABBIX_RELEASE_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/${REPO_OS}/pool/main/z/zabbix-release/zabbix-release_latest+${REPO_OS}${OS_VERSION}_all.deb"
+# Fallback: versioned filename e.g. zabbix-release_7.4-0.1+ubuntu22.04_all.deb
+ZABBIX_RELEASE_URL_ALT="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/${REPO_OS}/pool/main/z/zabbix-release/zabbix-release_${ZABBIX_VERSION}-0.1+${REPO_OS}${OS_VERSION}_all.deb"
 
 log "Adding Zabbix ${ZABBIX_VERSION} repository..."
 TMP_DEB=$(mktemp /tmp/zabbix-release-XXXXXX.deb)
