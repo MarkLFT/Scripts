@@ -270,8 +270,27 @@ TMPDIR_WORK=$(mktemp -d /tmp/trmm-install-XXXXXX)
 trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
 # Get the mesh agent URL from your mesh server
-# Build the base mesh agent URL — the community script appends installflags and meshinstall itself
-MESH_AGENT_URL="${MESH_SITE}/meshagents?id=${MESH_TOKEN}"
+# Install mesh agent ourselves using the script=1 endpoint (no auth needed)
+# This avoids needing the MeshCentral group ID
+MESH_SCRIPT_URL="${MESH_SITE}/meshagents?script=1"
+MESH_INSTALL_SH="$TMPDIR_WORK/meshinstall.sh"
+
+log_info "Installing mesh agent..."
+wget -q "$MESH_SCRIPT_URL" -O "$MESH_INSTALL_SH" 2>/dev/null \
+    || die "Could not download mesh installer from $MESH_SITE"
+chmod +x "$MESH_INSTALL_SH"
+mkdir -p /opt/tacticalmesh
+bash "$MESH_INSTALL_SH" "$MESH_SITE" >/dev/null 2>&1 || true
+
+sleep 2
+if systemctl is-active --quiet meshagent 2>/dev/null || pgrep -x meshagent >/dev/null 2>&1; then
+    log_ok "Mesh agent installed"
+else
+    log_warn "Mesh agent status unclear — continuing anyway"
+fi
+
+# Dummy value — community script needs a mesh URL argument but mesh is already installed
+MESH_AGENT_URL="${MESH_SITE}/meshagents?script=1"
 
 log_info "Downloading community install script..."
 COMMUNITY_SCRIPT="$TMPDIR_WORK/rmmagent-linux.sh"
@@ -281,9 +300,13 @@ wget -q "https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/refs
 
 chmod +x "$COMMUNITY_SCRIPT"
 
+# Patch the community script to skip mesh install (we handle it above)
+# Replace the install_mesh call in the dispatcher with a no-op
+sed -i 's/install_mesh$/: # mesh already installed/' "$COMMUNITY_SCRIPT"
+
 echo ""
-log_info "Running community agent installer..."
-log_info "Note: This will install Go and compile the agent — may take several minutes."
+log_info "Compiling and installing TacticalRMM agent..."
+log_info "Note: This will compile from source — may take several minutes."
 echo ""
 
 # Run with --simple flag for cleaner output
