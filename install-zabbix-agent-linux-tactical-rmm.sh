@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 # =============================================================================
 # TacticalRMM - Zabbix Agent 2 Install / Update Script (Linux)
