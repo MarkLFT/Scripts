@@ -94,11 +94,11 @@ prompt_value() {
     local label="$1" default="$2"
     REPLY=""
     if [[ -n "$default" ]]; then
-        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD
+        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD || true
         [[ -z "$REPLY" ]] && REPLY="$default"
     else
         while [[ -z "$REPLY" ]]; do
-            read -rp "  ${label}: " REPLY <&$TTY_FD
+            read -rp "  ${label}: " REPLY <&$TTY_FD || true
         done
     fi
 }
@@ -107,7 +107,7 @@ prompt_secret() {
     local label="$1"
     SECRET_REPLY=""
     while [[ -z "$SECRET_REPLY" ]]; do
-        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD
+        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD || true
         echo ""
         [[ -z "$SECRET_REPLY" ]] && echo -e "  ${RED}Value cannot be empty.${RESET}"
     done
@@ -116,7 +116,7 @@ prompt_secret() {
 prompt_confirm() {
     local question="$1" default="${2:-y}"
     local prompt; [[ "$default" == "y" ]] && prompt="[Y/n]" || prompt="[y/N]"
-    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD
+    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD || true
     ans="${ans:-$default}"
     [[ "${ans,,}" == "y" ]]
 }
@@ -130,7 +130,7 @@ prompt_choice() {
     done
     local choice
     while true; do
-        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD
+        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD || true
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             REPLY="${options[$((choice-1))]}"; return 0
         fi
