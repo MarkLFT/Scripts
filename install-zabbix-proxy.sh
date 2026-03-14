@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Zabbix Proxy - Interactive Install Script (Debian)
+# Zabbix Proxy - Interactive Installer (Debian) — Standard Edition
 # Supports: Debian 11 (Bullseye), Debian 12 (Bookworm), Debian 13 (Trixie)
 #
 # Fixed settings (not prompted):
-#   - Proxy mode  : Active (proxy initiates connection to server)
-#   - Database    : SQLite3 (no DB server required)
-#   - Performance : Tuned for a small LAN (~12 agents)
+#   Mode        : Active (proxy dials out — no inbound firewall rule needed)
+#   Database    : SQLite3 (zero setup, perfect for most sites)
+#   Performance : Tuned for a small LAN (~12 agents)
+#
+# Prompts for: Zabbix version, hostname, port, server address, PSK
 #
 # Usage:
-#   chmod +x install-zabbix-proxy.sh
+#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-proxy.sh | sudo bash
 #   sudo ./install-zabbix-proxy.sh
 # =============================================================================
 
@@ -39,12 +41,15 @@ log_info()  { echo -e "  ${YELLOW}ℹ${RESET}  $1"; }
 log_warn()  { echo -e "  ${YELLOW}⚠${RESET}  $1" >&2; }
 die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 
-# --- Reconnect stdin to terminal ---------------------------------------------
-# When the script is piped via curl | bash, stdin is the pipe and read
-# commands receive EOF immediately. Redirecting to /dev/tty restores
-# interactive input so all prompts work correctly.
-if [[ ! -t 0 ]]; then
-    exec < /dev/tty || die "Cannot open /dev/tty for interactive input. Run the script directly instead of piping."
+# --- Reconnect prompts to terminal -------------------------------------------
+# When piped via curl | bash, stdin (fd 0) is the pipe bash reads the script
+# from. Opening /dev/tty on fd 3 instead leaves fd 0 untouched so bash keeps
+# reading the script, while all read prompts use fd 3 (the terminal).
+if [[ -t 0 ]]; then
+    TTY_FD=0
+else
+    exec 3</dev/tty || die "Cannot open /dev/tty — run directly: sudo bash install-zabbix-proxy.sh"
+    TTY_FD=3
 fi
 
 # --- Must run as root --------------------------------------------------------
@@ -59,60 +64,50 @@ case "$VERSION_CODENAME" in
     bullseye) OS_VER="11" ;;
     bookworm)  OS_VER="12" ;;
     trixie)    OS_VER="13" ;;
-    *) die "Unsupported Debian version: $VERSION_CODENAME (supported bullseye, bookworm, or trixie)" ;;
+    *) die "Unsupported Debian version: $VERSION_CODENAME (supported: bullseye, bookworm, trixie)" ;;
 esac
 
 # =============================================================================
-# FIXED DEFAULTS (not prompted)
+# FIXED SETTINGS
 # =============================================================================
 
-# Proxy mode 0 = Active (proxy dials out to server — no inbound firewall rule needed)
 PROXY_MODE=0
-
-# SQLite3 — simple, zero-maintenance, perfectly adequate for ~12 agents
+PROXY_MODE_LABEL="Active"
 PROXY_PACKAGE="zabbix-proxy-sqlite3"
 SQLITE_DB_PATH="/var/lib/zabbix/zabbix_proxy.db"
+DB_TYPE="SQLite3"
 
-# Performance — sized for a small LAN with ~12 agents
-# Pollers       : 3  — ample for 12 agents; each polls multiple items in rotation
-# Preprocessors : 2  — handles value preprocessing before forwarding to server
-# HTTP pollers  : 1  — for any HTTP/HTTPS checks
-# Config freq   : 300s (5 min) — how often proxy fetches config from server
-# Data sender   : 5s  — how often proxy flushes collected data to server
-#                       (slightly relaxed from default 1s; fine for a small site)
-# Local buffer  : 3600s (1 hr) — keep data locally if server is unreachable
+# Performance — small LAN (~12 agents)
 START_POLLERS=3
 START_PREPROCESSORS=2
 START_HTTP_POLLERS=1
+START_IPMI_POLLERS=0
 CONFIG_FREQUENCY=300
 DATA_SENDER_FREQUENCY=5
 PROXY_LOCAL_BUFFER=3600
-PROXY_OFFLINE_BUFFER=3600
 
 # =============================================================================
-# PROMPTS
+# PROMPT HELPERS
 # =============================================================================
 
 prompt_value() {
-    # Usage: prompt_value "Label" "default" -> REPLY
     local label="$1" default="$2"
     REPLY=""
     if [[ -n "$default" ]]; then
-        read -rp "  ${label} [${default}]: " REPLY
+        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD
         [[ -z "$REPLY" ]] && REPLY="$default"
     else
         while [[ -z "$REPLY" ]]; do
-            read -rp "  ${label}: " REPLY
+            read -rp "  ${label}: " REPLY <&$TTY_FD
         done
     fi
 }
 
 prompt_secret() {
-    # Usage: prompt_secret "Label" -> SECRET_REPLY (not echoed)
     local label="$1"
     SECRET_REPLY=""
     while [[ -z "$SECRET_REPLY" ]]; do
-        read -rsp "  ${label}: " SECRET_REPLY
+        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD
         echo ""
         [[ -z "$SECRET_REPLY" ]] && echo -e "  ${RED}Value cannot be empty.${RESET}"
     done
@@ -121,7 +116,7 @@ prompt_secret() {
 prompt_confirm() {
     local question="$1" default="${2:-y}"
     local prompt; [[ "$default" == "y" ]] && prompt="[Y/n]" || prompt="[y/N]"
-    read -rp "  ${question} ${prompt}: " ans
+    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD
     ans="${ans:-$default}"
     [[ "${ans,,}" == "y" ]]
 }
@@ -135,7 +130,7 @@ prompt_choice() {
     done
     local choice
     while true; do
-        read -rp "  Choice [1-${#options[@]}]: " choice
+        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             REPLY="${options[$((choice-1))]}"; return 0
         fi
@@ -187,7 +182,7 @@ ZABBIX_SERVER_PORT="$REPLY"
 
 # --- PSK encryption ----------------------------------------------------------
 print_section "Encryption (PSK)"
-echo -e "  PSK encryption is strongly recommended."
+echo -e "  PSK encryption is strongly recommended for proxy-server communication."
 echo ""
 
 USE_PSK=false
@@ -199,16 +194,16 @@ if prompt_confirm "Enable PSK encryption"; then
 
     if [[ "$PSK_CHOICE" == "Generate automatically" ]]; then
         PSK_VALUE=$(generate_psk)
-        log_ok "PSK generated."
+        log_ok "PSK generated (256-bit)"
     else
-        echo -e "\n  ${YELLOW}Must be a hex string (64 hex chars = 256-bit).${RESET}"
+        echo -e "\n  ${YELLOW}Must be a hex string — 64 hex characters = 256-bit.${RESET}"
         SECRET_REPLY=""
-        prompt_secret "PSK value"
+        prompt_secret "PSK value (hex string)"
         PSK_VALUE="$SECRET_REPLY"
     fi
 
     REPLY=""
-    prompt_value "PSK identity (label — must match Zabbix UI)" "PSK_${PROXY_HOSTNAME}"
+    prompt_value "PSK identity (label — must match what you enter in Zabbix UI)" "PSK_${PROXY_HOSTNAME}"
     PSK_IDENTITY="$REPLY"
 
     PSK_FILE="/etc/zabbix/zabbix_proxy.psk"
@@ -224,7 +219,7 @@ echo -e "  ${BOLD}Proxy port:${RESET}      $PROXY_PORT"
 echo -e "  ${BOLD}Mode:${RESET}            Active (proxy dials out)"
 echo -e "  ${BOLD}Zabbix server:${RESET}   $ZABBIX_SERVER:$ZABBIX_SERVER_PORT"
 echo -e "  ${BOLD}Database:${RESET}        SQLite3 ($SQLITE_DB_PATH)"
-echo -e "  ${BOLD}PSK:${RESET}             $([ "$USE_PSK" == "true" ] && echo "Enabled — identity: $PSK_IDENTITY" || echo "Disabled")"
+echo -e "  ${BOLD}PSK:${RESET}             $([ "$USE_PSK" == "true" ] && echo "Enabled (identity: $PSK_IDENTITY)" || echo "Disabled")"
 echo ""
 echo -e "  ${BOLD}Performance (small LAN ~12 agents):${RESET}"
 echo -e "    Pollers            $START_POLLERS"
@@ -232,7 +227,7 @@ echo -e "    Preprocessors      $START_PREPROCESSORS"
 echo -e "    HTTP pollers       $START_HTTP_POLLERS"
 echo -e "    Config frequency   ${CONFIG_FREQUENCY}s"
 echo -e "    Data sender        ${DATA_SENDER_FREQUENCY}s"
-echo -e "    Local buffer       ${PROXY_LOCAL_BUFFER}s (hold data if server unreachable)"
+echo -e "    Local buffer       ${PROXY_LOCAL_BUFFER}s"
 echo ""
 
 prompt_confirm "Proceed with installation" || { echo "Aborted."; exit 0; }
@@ -247,8 +242,9 @@ ZABBIX_REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/debian
 ZABBIX_REPO_URL_ALT="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_${ZABBIX_VERSION}+debian_all.deb"
 
 TMP_DEB=$(mktemp /tmp/zabbix-release-XXXXXX.deb)
-log_info "Downloading Zabbix ${ZABBIX_VERSION} release package..."
+trap 'rm -f "$TMP_DEB"' EXIT
 
+log_info "Downloading Zabbix ${ZABBIX_VERSION} release package..."
 if ! curl -fsSL "$ZABBIX_REPO_URL" -o "$TMP_DEB" 2>/dev/null; then
     log_warn "Primary URL failed, trying fallback..."
     curl -fsSL "$ZABBIX_REPO_URL_ALT" -o "$TMP_DEB" \
@@ -256,7 +252,6 @@ if ! curl -fsSL "$ZABBIX_REPO_URL" -o "$TMP_DEB" 2>/dev/null; then
 fi
 
 dpkg -i "$TMP_DEB" >/dev/null 2>&1 || true
-rm -f "$TMP_DEB"
 apt-get update -qq
 log_ok "Repository added"
 
@@ -267,13 +262,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$PROXY_PACKAGE"
 log_ok "Package installed"
 
 # --- Prepare SQLite directory ------------------------------------------------
-print_section "Preparing SQLite Database Directory"
+print_section "Preparing Database"
 SQLITE_DIR=$(dirname "$SQLITE_DB_PATH")
 mkdir -p "$SQLITE_DIR"
 chown zabbix:zabbix "$SQLITE_DIR"
 chmod 750 "$SQLITE_DIR"
 log_ok "SQLite directory ready: $SQLITE_DIR"
-log_info "Database file will be created automatically on first start: $SQLITE_DB_PATH"
+log_info "Database file will be created automatically on first start"
 
 # --- Write PSK file ----------------------------------------------------------
 if [[ "$USE_PSK" == "true" ]]; then
@@ -296,14 +291,13 @@ mkdir -p /var/log/zabbix
 chown zabbix:zabbix /var/log/zabbix
 
 if [[ "$USE_PSK" == "true" ]]; then
-    PSK_BLOCK="### Encryption
-TLSConnect=psk
+    PSK_BLOCK="TLSConnect=psk
 TLSAccept=psk
 TLSPSKFile=${PSK_FILE}
 TLSPSKIdentity=${PSK_IDENTITY}"
 else
-    PSK_BLOCK="### Encryption
-# PSK not configured — enable by setting TLSConnect/TLSAccept/TLSPSKFile/TLSPSKIdentity"
+    PSK_BLOCK="# TLS/PSK not configured
+# To enable: set TLSConnect, TLSAccept, TLSPSKFile, TLSPSKIdentity"
 fi
 
 cat > "$PROXY_CONF" <<EOF
@@ -313,52 +307,36 @@ cat > "$PROXY_CONF" <<EOF
 # Mode: Active | DB: SQLite3 | Scale: Small LAN
 # =============================================================================
 
-### Identity
 Hostname=${PROXY_HOSTNAME}
-
-### Mode — Active: proxy dials out to server, no inbound port required
 ProxyMode=0
 
-### Zabbix Server
 Server=${ZABBIX_SERVER}
 ServerPort=${ZABBIX_SERVER_PORT}
 
-### Listen port (used for status queries; not required for active mode)
 ListenIP=0.0.0.0
 ListenPort=${PROXY_PORT}
 
-### Logging
 LogFile=${PROXY_LOG}
 LogFileSize=20
 DebugLevel=3
 PidFile=${PROXY_PID}
 
-### Database — SQLite3
 DBName=${SQLITE_DB_PATH}
 
 ${PSK_BLOCK}
 
-### Data collection — tuned for ~12 agents on a small LAN
-# 3 pollers is more than enough; each handles many items per second
-StartPollers=3
-StartIPMIPollers=0
-StartPreprocessingWorkers=2
-StartHTTPPollers=1
+StartPollers=${START_POLLERS}
+StartIPMIPollers=${START_IPMI_POLLERS}
+StartPreprocessingWorkers=${START_PREPROCESSORS}
+StartHTTPPollers=${START_HTTP_POLLERS}
 StartJavaPollers=0
 
-### Frequency
-# How often proxy fetches its configuration from the server (seconds)
 ProxyConfigFrequency=${CONFIG_FREQUENCY}
-# How often proxy sends buffered data to the server (seconds)
 ProxyDataSenderFrequency=${DATA_SENDER_FREQUENCY}
 
-### Buffering
-# Keep data locally for up to 1 hour if the server is temporarily unreachable
 ProxyLocalBuffer=${PROXY_LOCAL_BUFFER}
-# Retain data for up to 1 hour when working in offline mode
-ProxyOfflineBuffer=${PROXY_OFFLINE_BUFFER}
+ProxyOfflineBuffer=${PROXY_LOCAL_BUFFER}
 
-### Timeouts
 Timeout=10
 EOF
 
@@ -383,9 +361,8 @@ fi
 # --- Firewall ----------------------------------------------------------------
 print_section "Firewall"
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    log_info "UFW is active."
-    log_info "In Active mode the proxy dials OUT — no inbound rule is needed for agent communication."
-    if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for passive agent checks or status queries)" "n"; then
+    log_info "UFW is active. Active mode dials OUT — no inbound rule needed for normal operation."
+    if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for status queries or passive checks)" "n"; then
         ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null
         log_ok "UFW rule added for port ${PROXY_PORT}/tcp"
     fi
