@@ -202,15 +202,8 @@ log_ok "Client: $CLIENT_NAME (ID: $CLIENT_ID)"
 # --- Select site -------------------------------------------------------------
 print_section "Site"
 log_info "Loading sites for $CLIENT_NAME..."
-# Sites are accessed per-client: /clients/{id}/sites/
-SITES_JSON=$(trmm_get "clients/${CLIENT_ID}/sites/")
-
-# Validate the API response is JSON
-if ! echo "$SITES_JSON" | jq empty 2>/dev/null; then
-    log_warn "Unexpected response from clients/${CLIENT_ID}/sites/ endpoint:"
-    echo "$SITES_JSON" | head -3
-    die "Could not load sites — check API key permissions"
-fi
+# Sites are embedded in the clients response — extract from already-fetched data
+SITES_JSON=$(echo "$CLIENTS_JSON" | jq --argjson cid "${CLIENT_ID}"     '[.[] | select(.id == $cid) | .sites[]]')
 
 SITE_COUNT=$(echo "$SITES_JSON" | jq 'length')
 [[ "$SITE_COUNT" -eq 0 ]] && die "No sites found for $CLIENT_NAME — create a site first"
