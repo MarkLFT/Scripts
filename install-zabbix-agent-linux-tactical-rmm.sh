@@ -13,10 +13,12 @@
 set -euo pipefail
 
 # --- Arguments ---------------------------------------------------------------
-ZABBIX_PROXY="${1:-}"
-ZABBIX_SERVER="${2:-}"
-DISCORD_WEBHOOK="${3:-}"
-ZABBIX_VERSION="${4:-}"
+# Strip surrounding single quotes that TacticalRMM adds when passing
+# shell script arguments via variable substitution
+ZABBIX_PROXY="${1:-}"; ZABBIX_PROXY="${ZABBIX_PROXY//'/}"
+ZABBIX_SERVER="${2:-}"; ZABBIX_SERVER="${ZABBIX_SERVER//'/}"
+DISCORD_WEBHOOK="${3:-}"; DISCORD_WEBHOOK="${DISCORD_WEBHOOK//'/}"
+ZABBIX_VERSION="${4:-}"; ZABBIX_VERSION="${ZABBIX_VERSION//'/}"
 AGENT_CONF="/etc/zabbix/zabbix_agent2.conf"
 AGENT_CONF_D="/etc/zabbix/zabbix_agent2.d"
 
@@ -328,3 +330,4 @@ send_discord "✅ Zabbix Agent ${ACTION}" \
 
 log "Done. Action: $ACTION | Services: $SERVICES_MSG"
 exit 0
+
