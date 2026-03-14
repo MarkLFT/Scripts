@@ -203,7 +203,7 @@ log_ok "Client: $CLIENT_NAME (ID: $CLIENT_ID)"
 print_section "Site"
 log_info "Loading sites for $CLIENT_NAME..."
 ALL_SITES_JSON=$(trmm_get "sites/")
-SITES_JSON=$(echo "$ALL_SITES_JSON" | jq "[.[] | select(.client == ${CLIENT_ID})]")
+SITES_JSON=$(echo "$ALL_SITES_JSON" | jq --argjson cid "${CLIENT_ID}" "[.[] | select(.client == \$cid)]")
 SITE_COUNT=$(echo "$SITES_JSON" | jq 'length')
 [[ "$SITE_COUNT" -eq 0 ]] && die "No sites found for $CLIENT_NAME — create a site first"
 
