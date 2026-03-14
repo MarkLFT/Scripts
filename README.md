@@ -29,9 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix
 or
 
 ```
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux.sh -o install-zabbix-agent-linux.sh
-chmod +x install-zabbix-agent-linux.sh
-sudo ./install-zabbix-agent-linux.sh "10.10.1.5" "10.10.0.10" "https://discord.com/api/webhooks/..." "7.4"
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux.sh | sudo bash -s -- "10.10.1.5" "10.10.0.10" "https://discord.com/api/webhooks/..." "7.4"
 ```
 
 ### Windows Agent
