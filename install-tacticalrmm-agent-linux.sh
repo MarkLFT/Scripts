@@ -270,9 +270,8 @@ TMPDIR_WORK=$(mktemp -d /tmp/trmm-install-XXXXXX)
 trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
 # Get the mesh agent URL from your mesh server
-# Build the mesh agent download URL using the token from TRMM API
-# Format: https://mesh.domain/meshagents?id=TOKEN&installflags=2&meshinstall=6
-MESH_AGENT_URL="${MESH_SITE}/meshagents?id=${MESH_TOKEN}&installflags=2&meshinstall=6"
+# Build the base mesh agent URL — the community script appends installflags and meshinstall itself
+MESH_AGENT_URL="${MESH_SITE}/meshagents?id=${MESH_TOKEN}"
 
 log_info "Downloading community install script..."
 COMMUNITY_SCRIPT="$TMPDIR_WORK/rmmagent-linux.sh"
