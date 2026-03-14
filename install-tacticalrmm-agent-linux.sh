@@ -128,15 +128,27 @@ pick_from_list() {
 # =============================================================================
 # TRMM API HELPERS
 # =============================================================================
+# TacticalRMM REST API — no path prefix, endpoints are at the root.
+# e.g. https://api.yourdomain.com/clients/
+# Docs: https://docs.tacticalrmm.com/functions/api/
 
 TRMM_URL=""
 TRMM_TOKEN=""
 
-trmm_api() {
+trmm_get() {
     local endpoint="$1"
-    curl -s -X GET "${TRMM_URL}/api/v3/${endpoint}" \
+    curl -s -X GET "${TRMM_URL}/${endpoint}" \
         -H "Content-Type: application/json" \
         -H "X-API-KEY: ${TRMM_TOKEN}" \
+        2>/dev/null
+}
+
+trmm_post() {
+    local endpoint="$1" body="$2"
+    curl -s -X POST "${TRMM_URL}/${endpoint}" \
+        -H "Content-Type: application/json" \
+        -H "X-API-KEY: ${TRMM_TOKEN}" \
+        -d "$body" \
         2>/dev/null
 }
 
@@ -162,22 +174,22 @@ TRMM_TOKEN="$SECRET_REPLY"
 
 # Verify connection
 log_info "Testing connection..."
-PING_RESULT=$(curl -s -o /dev/null -w "%{http_code}" \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "X-API-KEY: ${TRMM_TOKEN}" \
-    "${TRMM_URL}/api/v3/clients/" 2>/dev/null)
+    "${TRMM_URL}/clients/" 2>/dev/null)
 
-if [[ "$PING_RESULT" == "200" ]]; then
+if [[ "$HTTP_CODE" == "200" ]]; then
     log_ok "Connected successfully"
-elif [[ "$PING_RESULT" == "401" ]]; then
-    die "Authentication failed — check your API key"
+elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
+    die "Authentication failed (HTTP $HTTP_CODE) — check your API key"
 else
-    die "Could not reach TacticalRMM (HTTP $PING_RESULT) — check the URL"
+    die "Could not reach TacticalRMM (HTTP $HTTP_CODE) — check the URL"
 fi
 
 # --- Select client -----------------------------------------------------------
 print_section "Client"
 log_info "Loading clients..."
-CLIENTS_JSON=$(trmm_api "clients/")
+CLIENTS_JSON=$(trmm_get "clients/")
 CLIENT_COUNT=$(echo "$CLIENTS_JSON" | jq 'length' 2>/dev/null || echo "0")
 [[ "$CLIENT_COUNT" -eq 0 ]] && die "No clients found — create a client in TacticalRMM first"
 
@@ -190,9 +202,8 @@ log_ok "Client: $CLIENT_NAME (ID: $CLIENT_ID)"
 # --- Select site -------------------------------------------------------------
 print_section "Site"
 log_info "Loading sites for $CLIENT_NAME..."
-SITES_JSON=$(trmm_api "sites/")
-# Filter to just this client's sites
-SITES_JSON=$(echo "$SITES_JSON" | jq "[.[] | select(.client == ${CLIENT_ID})]")
+ALL_SITES_JSON=$(trmm_get "sites/")
+SITES_JSON=$(echo "$ALL_SITES_JSON" | jq "[.[] | select(.client == ${CLIENT_ID})]")
 SITE_COUNT=$(echo "$SITES_JSON" | jq 'length')
 [[ "$SITE_COUNT" -eq 0 ]] && die "No sites found for $CLIENT_NAME — create a site first"
 
@@ -206,12 +217,8 @@ log_ok "Site: $SITE_NAME (ID: $SITE_ID)"
 print_section "Agent"
 echo ""
 prompt_choice "Agent type" "Server" "Workstation"
-AGENT_TYPE="${REPLY,,}"  # lowercase: server / workstation
+AGENT_TYPE="${REPLY,,}"
 log_info "Type: $REPLY"
-
-REPLY=""
-prompt_value "Agent description / hostname tag (optional — leave blank to use system hostname)" ""
-AGENT_DESC="$REPLY"
 
 # --- Summary & confirm -------------------------------------------------------
 print_section "Configuration Summary"
@@ -220,41 +227,85 @@ echo -e "  ${BOLD}TRMM Server:${RESET}   $TRMM_URL"
 echo -e "  ${BOLD}Client:${RESET}        $CLIENT_NAME"
 echo -e "  ${BOLD}Site:${RESET}          $SITE_NAME"
 echo -e "  ${BOLD}Agent type:${RESET}    $AGENT_TYPE"
-[[ -n "$AGENT_DESC" ]] && echo -e "  ${BOLD}Description:${RESET}   $AGENT_DESC"
 echo -e "  ${BOLD}OS:${RESET}            $ID $VERSION_ID"
 echo ""
 
 prompt_confirm "Proceed with installation" || { echo "Aborted."; exit 0; }
 
 # =============================================================================
-# DOWNLOAD AND RUN INSTALLER
+# GENERATE INSTALLER VIA DEPLOYMENT API
 # =============================================================================
 
-print_section "Downloading Installer"
+print_section "Generating Installer"
 
-# Detect architecture
-ARCH="64"
-[[ "$(uname -m)" == "aarch64" ]] && ARCH="arm64"
+# Create a deployment token via the TRMM API.
+# This is equivalent to clicking Agents > Install Agent in the UI.
+# The deployment returns a URL used to download the configured installer.
+DEPLOY_BODY=$(cat <<EOF
+{
+    "site": ${SITE_ID},
+    "agent_type": "${AGENT_TYPE}",
+    "expires": null,
+    "install_flags": {
+        "rdp": false,
+        "ping": true,
+        "power": false
+    }
+}
+EOF
+)
 
-INSTALLER_URL="${TRMM_URL}/api/v3/plat/installer/?plat=linux&arch=${ARCH}&token=${TRMM_TOKEN}&client_id=${CLIENT_ID}&site_id=${SITE_ID}&agent_type=${AGENT_TYPE}"
-INSTALLER_PATH="/tmp/trmm-agent-install-$$.sh"
+log_info "Creating deployment token..."
+DEPLOY_RESULT=$(trmm_post "clients/${CLIENT_ID}/deployments/" "$DEPLOY_BODY")
+DEPLOY_URL=$(echo "$DEPLOY_RESULT" | jq -r '.url // empty' 2>/dev/null)
 
-log_info "Downloading agent installer (arch: $ARCH)..."
-HTTP_CODE=$(curl -s -w "%{http_code}" -o "$INSTALLER_PATH" "$INSTALLER_URL" 2>/dev/null)
+if [[ -z "$DEPLOY_URL" ]]; then
+    # Deployment API may not be accessible — fall back to the
+    # generated installer endpoint which TRMM also exposes.
+    log_warn "Deployment API did not return a URL — trying direct installer endpoint..."
 
-if [[ "$HTTP_CODE" != "200" ]]; then
-    rm -f "$INSTALLER_PATH"
-    die "Failed to download installer (HTTP $HTTP_CODE) — check API key permissions"
+    ARCH="amd64"
+    [[ "$(uname -m)" == "aarch64" ]] && ARCH="arm64"
+
+    INSTALLER_URL="${TRMM_URL}/agents/installer/?client_id=${CLIENT_ID}&site_id=${SITE_ID}&agent_type=${AGENT_TYPE}&arch=${ARCH}&plat=linux&token=${TRMM_TOKEN}"
+    INSTALLER_PATH="/tmp/trmm-agent-$$.sh"
+
+    HTTP_CODE=$(curl -s -w "%{http_code}" -o "$INSTALLER_PATH" "$INSTALLER_URL" 2>/dev/null)
+    if [[ "$HTTP_CODE" != "200" ]] || ! head -1 "$INSTALLER_PATH" 2>/dev/null | grep -q '^#!'; then
+        rm -f "$INSTALLER_PATH"
+        echo ""
+        echo -e "  ${YELLOW}Automatic installer generation is not available via the API.${RESET}"
+        echo -e "  ${YELLOW}Please generate an installer manually:${RESET}"
+        echo ""
+        echo -e "    1. In TacticalRMM: Agents → Install Agent"
+        echo -e "    2. Select client: ${CYAN}${CLIENT_NAME}${RESET}, site: ${CYAN}${SITE_NAME}${RESET}"
+        echo -e "    3. Select: Linux, ${AGENT_TYPE}"
+        echo -e "    4. Copy the generated script and run it on this host"
+        echo ""
+        exit 1
+    fi
+else
+    log_info "Downloading installer from deployment URL..."
+    INSTALLER_PATH="/tmp/trmm-agent-$$.sh"
+    HTTP_CODE=$(curl -s -w "%{http_code}" -o "$INSTALLER_PATH" "$DEPLOY_URL" 2>/dev/null)
+    if [[ "$HTTP_CODE" != "200" ]]; then
+        rm -f "$INSTALLER_PATH"
+        die "Failed to download installer (HTTP $HTTP_CODE)"
+    fi
 fi
 
-# Sanity check — installer should be a shell script
-if ! head -1 "$INSTALLER_PATH" | grep -q '^#!'; then
+# Sanity check
+if ! head -1 "$INSTALLER_PATH" 2>/dev/null | grep -q '^#!'; then
     rm -f "$INSTALLER_PATH"
-    die "Downloaded file does not look like a shell script — check your API key and permissions"
+    die "Downloaded file does not look like a shell script — check API key permissions"
 fi
 
 chmod +x "$INSTALLER_PATH"
-log_ok "Installer downloaded"
+log_ok "Installer ready"
+
+# =============================================================================
+# INSTALL
+# =============================================================================
 
 print_section "Installing Agent"
 log_info "Running TacticalRMM agent installer..."
@@ -262,12 +313,9 @@ echo ""
 
 bash "$INSTALLER_PATH"
 INSTALL_EXIT=$?
-
 rm -f "$INSTALLER_PATH"
 
-if [[ $INSTALL_EXIT -ne 0 ]]; then
-    die "Installer exited with code $INSTALL_EXIT"
-fi
+[[ $INSTALL_EXIT -ne 0 ]] && die "Installer exited with code $INSTALL_EXIT"
 
 # --- Verify ------------------------------------------------------------------
 print_section "Verifying"
@@ -278,7 +326,7 @@ if systemctl is-active --quiet tacticalagent 2>/dev/null; then
 elif systemctl is-active --quiet mesh-agent 2>/dev/null; then
     log_ok "mesh-agent service is running"
 else
-    log_warn "Could not verify service status — check: systemctl status tacticalagent"
+    log_warn "Could not verify service — check: systemctl status tacticalagent"
 fi
 
 # =============================================================================
@@ -290,9 +338,9 @@ echo -e "${GREEN}${BOLD}╔═════════════════�
 echo -e "${GREEN}${BOLD}║          TacticalRMM Agent Installed ✔               ║${RESET}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  ${BOLD}Client:${RESET}     $CLIENT_NAME"
-echo -e "  ${BOLD}Site:${RESET}       $SITE_NAME"
-echo -e "  ${BOLD}Type:${RESET}       $AGENT_TYPE"
+echo -e "  ${BOLD}Client:${RESET}  $CLIENT_NAME"
+echo -e "  ${BOLD}Site:${RESET}    $SITE_NAME"
+echo -e "  ${BOLD}Type:${RESET}    $AGENT_TYPE"
 echo ""
 echo -e "  ${BOLD}Useful commands:${RESET}"
 echo -e "  Status:   ${CYAN}systemctl status tacticalagent${RESET}"
