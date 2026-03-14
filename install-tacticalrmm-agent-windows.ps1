@@ -5,8 +5,8 @@
 # Prompts for all sensitive values — safe for public hosting.
 #
 # Usage (run as Administrator):
-#   $url = "https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-windows.ps1"
-#   Invoke-WebRequest $url -OutFile "$env:TEMP\install-trmm-agent-windows.ps1"
+#   Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-windows.ps1 `
+#     -OutFile "$env:TEMP\install-trmm-agent-windows.ps1"
 #   & "$env:TEMP\install-trmm-agent-windows.ps1"
 # =============================================================================
 
@@ -42,9 +42,7 @@ function Read-Value {
         if ([string]::IsNullOrWhiteSpace($input)) { return $Default }
         return $input.Trim()
     } else {
-        do {
-            $input = Read-Host "  $Label"
-        } while ([string]::IsNullOrWhiteSpace($input))
+        do { $input = Read-Host "  $Label" } while ([string]::IsNullOrWhiteSpace($input))
         return $input.Trim()
     }
 }
@@ -95,15 +93,27 @@ function Pick-FromList {
     return $Items[[int]$choice - 1]
 }
 
-# --- TRMM API helper ---------------------------------------------------------
-function Invoke-TrmmApi {
+# =============================================================================
+# TRMM API HELPERS
+# =============================================================================
+# TacticalRMM REST API — no path prefix, endpoints are at the root.
+# e.g. https://api.yourdomain.com/clients/
+# Docs: https://docs.tacticalrmm.com/functions/api/
+
+$TrmmUrl   = ""
+$TrmmToken = ""
+
+function Invoke-TrmmGet {
     param([string]$Endpoint)
     $headers = @{ "X-API-KEY" = $TrmmToken; "Content-Type" = "application/json" }
-    try {
-        return Invoke-RestMethod -Uri "$TrmmUrl/api/v3/$Endpoint" -Headers $headers -Method Get
-    } catch {
-        Invoke-Die "API call failed: $_"
-    }
+    return Invoke-RestMethod -Uri "$TrmmUrl/$Endpoint" -Headers $headers -Method Get
+}
+
+function Invoke-TrmmPost {
+    param([string]$Endpoint, [hashtable]$Body)
+    $headers = @{ "X-API-KEY" = $TrmmToken; "Content-Type" = "application/json" }
+    return Invoke-RestMethod -Uri "$TrmmUrl/$Endpoint" -Headers $headers -Method Post `
+        -Body ($Body | ConvertTo-Json -Depth 5) -ContentType "application/json"
 }
 
 # =============================================================================
@@ -122,25 +132,24 @@ Write-Host "  Settings → Global Settings → API Keys → Add API Key" -Foregr
 Write-Host ""
 $TrmmToken = Read-Secret "API Key"
 
-# Verify connection
 Write-Info "Testing connection..."
 try {
     $headers = @{ "X-API-KEY" = $TrmmToken; "Content-Type" = "application/json" }
-    $null = Invoke-RestMethod -Uri "$TrmmUrl/api/v3/clients/" -Headers $headers -Method Get
+    $null = Invoke-RestMethod -Uri "$TrmmUrl/clients/" -Headers $headers -Method Get
     Write-Ok "Connected successfully"
 } catch {
-    $statusCode = $_.Exception.Response.StatusCode.value__
-    if ($statusCode -eq 401) {
-        Invoke-Die "Authentication failed — check your API key"
+    $code = $_.Exception.Response.StatusCode.value__
+    if ($code -eq 401 -or $code -eq 403) {
+        Invoke-Die "Authentication failed (HTTP $code) — check your API key"
     } else {
-        Invoke-Die "Could not reach TacticalRMM (HTTP $statusCode) — check the URL"
+        Invoke-Die "Could not reach TacticalRMM (HTTP $code) — check the URL"
     }
 }
 
 # --- Client ------------------------------------------------------------------
 Write-Section "Client"
 Write-Info "Loading clients..."
-$Clients = Invoke-TrmmApi "clients/"
+$Clients = Invoke-TrmmGet "clients/"
 if ($Clients.Count -eq 0) { Invoke-Die "No clients found — create a client in TacticalRMM first" }
 
 $SelectedClient = Pick-FromList "Select client" $Clients "name" "id"
@@ -149,69 +158,96 @@ Write-Ok "Client: $($SelectedClient.name) (ID: $($SelectedClient.id))"
 # --- Site --------------------------------------------------------------------
 Write-Section "Site"
 Write-Info "Loading sites for $($SelectedClient.name)..."
-$AllSites = Invoke-TrmmApi "sites/"
-$Sites = $AllSites | Where-Object { $_.client -eq $SelectedClient.id }
+$AllSites = Invoke-TrmmGet "sites/"
+$Sites = @($AllSites | Where-Object { $_.client -eq $SelectedClient.id })
 if ($Sites.Count -eq 0) { Invoke-Die "No sites found for $($SelectedClient.name) — create a site first" }
 
-$SelectedSite = Pick-FromList "Select site" @($Sites) "name" "id"
+$SelectedSite = Pick-FromList "Select site" $Sites "name" "id"
 Write-Ok "Site: $($SelectedSite.name) (ID: $($SelectedSite.id))"
 
 # --- Agent type --------------------------------------------------------------
 Write-Section "Agent"
 Write-Host ""
-$AgentType = Read-Choice "Agent type" @("Server", "Workstation")
-$AgentType = $AgentType.ToLower()
+$AgentType = (Read-Choice "Agent type" @("Server", "Workstation")).ToLower()
 Write-Info "Type: $AgentType"
-
-$AgentDesc = Read-Value "Agent description (optional — leave blank to use hostname)" ""
-
-# --- Architecture ------------------------------------------------------------
-$Arch = "64"
-if ([Environment]::Is64BitOperatingSystem -eq $false) { $Arch = "32" }
 
 # --- Summary & confirm -------------------------------------------------------
 Write-Section "Configuration Summary"
 Write-Host ""
-Write-Host "  Server:      $TrmmUrl"
-Write-Host "  Client:      $($SelectedClient.name)"
-Write-Host "  Site:        $($SelectedSite.name)"
-Write-Host "  Agent type:  $AgentType"
-Write-Host "  Arch:        ${Arch}-bit"
-if ($AgentDesc) { Write-Host "  Description: $AgentDesc" }
+Write-Host "  Server:     $TrmmUrl"
+Write-Host "  Client:     $($SelectedClient.name)"
+Write-Host "  Site:       $($SelectedSite.name)"
+Write-Host "  Agent type: $AgentType"
 Write-Host ""
 
 if (-not (Read-Confirm "Proceed with installation")) {
-    Write-Host "Aborted."
-    exit 0
+    Write-Host "Aborted."; exit 0
 }
 
 # =============================================================================
-# DOWNLOAD AND INSTALL
+# GENERATE INSTALLER VIA DEPLOYMENT API
 # =============================================================================
 
-Write-Section "Downloading Installer"
+Write-Section "Generating Installer"
 
-$InstallerUrl  = "$TrmmUrl/api/v3/plat/installer/?plat=windows&arch=$Arch&token=$TrmmToken&client_id=$($SelectedClient.id)&site_id=$($SelectedSite.id)&agent_type=$AgentType"
-$InstallerPath = Join-Path $env:TEMP ("trmm-agent-install-" + [System.IO.Path]::GetRandomFileName() + ".exe")
+# Randomised temp path to prevent TOCTOU
+$InstallerPath = Join-Path $env:TEMP ("trmm-" + [System.IO.Path]::GetRandomFileName() + ".exe")
 
-Write-Info "Downloading agent installer..."
+# Try deployment API first
+$DeployUrl = $null
 try {
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath -UseBasicParsing
+    Write-Info "Creating deployment token..."
+    $deployBody = @{
+        site         = $SelectedSite.id
+        agent_type   = $AgentType
+        expires      = $null
+        install_flags = @{ rdp = $false; ping = $true; power = $false }
+    }
+    $deployResult = Invoke-TrmmPost "clients/$($SelectedClient.id)/deployments/" $deployBody
+    $DeployUrl = $deployResult.url
 } catch {
-    Invoke-Die "Failed to download installer: $_"
+    Write-Warn "Deployment API not available — trying direct installer endpoint..."
 }
 
-# Verify it's actually an executable
+if ($DeployUrl) {
+    Write-Info "Downloading installer from deployment URL..."
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $DeployUrl -OutFile $InstallerPath -UseBasicParsing
+    } catch {
+        Invoke-Die "Failed to download installer: $_"
+    }
+} else {
+    # Fall back to direct installer generation endpoint
+    $Arch = if ([Environment]::Is64BitOperatingSystem) { "64" } else { "32" }
+    $InstallerUrl = "$TrmmUrl/agents/installer/?client_id=$($SelectedClient.id)&site_id=$($SelectedSite.id)&agent_type=$AgentType&arch=$Arch&plat=windows&token=$TrmmToken"
+    Write-Info "Downloading installer (arch: $Arch-bit)..."
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath -UseBasicParsing
+    } catch {
+        Write-Host ""
+        Write-Warn "Automatic installer generation is not available via the API."
+        Write-Warn "Please generate an installer manually:"
+        Write-Host ""
+        Write-Host "    1. In TacticalRMM: Agents → Install Agent" -ForegroundColor Yellow
+        Write-Host "    2. Select client: $($SelectedClient.name), site: $($SelectedSite.name)" -ForegroundColor Yellow
+        Write-Host "    3. Select: Windows, $AgentType" -ForegroundColor Yellow
+        Write-Host "    4. Download and run the generated installer" -ForegroundColor Yellow
+        Write-Host ""
+        exit 1
+    }
+}
+
+# Verify it's an executable (MZ header)
 $magic = [System.IO.File]::ReadAllBytes($InstallerPath) | Select-Object -First 2
 if (-not ($magic[0] -eq 0x4D -and $magic[1] -eq 0x5A)) {
     Remove-Item $InstallerPath -Force -ErrorAction SilentlyContinue
     Invoke-Die "Downloaded file is not a valid executable — check API key permissions"
 }
-
 Write-Ok "Installer downloaded"
 
-# --- Verify signature --------------------------------------------------------
+# Verify signature
 Write-Info "Verifying digital signature..."
 $sig = Get-AuthenticodeSignature -FilePath $InstallerPath
 if ($sig.Status -ne "Valid") {
@@ -220,7 +256,10 @@ if ($sig.Status -ne "Valid") {
 }
 Write-Ok "Signature valid: $($sig.SignerCertificate.Subject)"
 
-# --- Run installer -----------------------------------------------------------
+# =============================================================================
+# INSTALL
+# =============================================================================
+
 Write-Section "Installing Agent"
 Write-Info "Running installer silently..."
 
@@ -239,11 +278,11 @@ $svc = Get-Service -Name "tacticalrmm" -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
     Write-Ok "tacticalrmm service is running"
 } else {
-    $meshSvc = Get-Service -Name "Mesh Agent*" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($meshSvc -and $meshSvc.Status -eq "Running") {
+    $mesh = Get-Service -Name "Mesh Agent*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($mesh -and $mesh.Status -eq "Running") {
         Write-Ok "Mesh Agent service is running"
     } else {
-        Write-Warn "Could not verify service status — check Services or Event Viewer"
+        Write-Warn "Could not verify service — check Services or Event Viewer"
     }
 }
 
@@ -262,7 +301,6 @@ Write-Host "  Type:    $AgentType"
 Write-Host ""
 Write-Host "  Useful commands:" -ForegroundColor White
 Write-Host "  Status:   " -NoNewline; Write-Host "Get-Service tacticalrmm" -ForegroundColor Cyan
-Write-Host "  Logs:     " -NoNewline; Write-Host "Get-EventLog -LogName Application -Source tacticalrmm -Newest 20" -ForegroundColor Cyan
 Write-Host "  Restart:  " -NoNewline; Write-Host "Restart-Service tacticalrmm" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  The agent should appear in TacticalRMM within a few seconds." -ForegroundColor Yellow
