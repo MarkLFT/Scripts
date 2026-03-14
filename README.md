@@ -29,11 +29,12 @@ sudo ./install-zabbix-agent-linux.sh "10.10.1.5" "10.10.0.10" "https://discord.c
 
 or
 
-```& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows.ps1))) -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"```
+```& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows.ps1))) -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"```
 
 or
 
 ```
 Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows.ps1 -OutFile install-zabbix-agent-windows.ps1
+```
 .\install-zabbix-agent-windows.ps1 -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"
 ```
