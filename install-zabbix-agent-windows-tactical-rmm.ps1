@@ -1,0 +1,364 @@
+#Requires -RunAsAdministrator
+# =============================================================================
+# TacticalRMM - Zabbix Agent 2 Install / Update Script (Windows)
+#
+# Script Arguments (set in TacticalRMM):
+#   $ZabbixProxy    = {{site.ZabbixProxy}}      e.g. 10.10.1.5
+#   $ZabbixServer   = {{site.ZabbixServer}}     e.g. 10.10.0.10
+#   $DiscordWebhook = {{global.DiscordWebhook}} e.g. https://discord.com/api/webhooks/...
+#   $ZabbixVersion  = {{global.ZabbixVersion}}  e.g. 7.4.0
+# =============================================================================
+
+param(
+    [Parameter(Mandatory=$true)]  [string]$ZabbixProxy,
+    [Parameter(Mandatory=$true)]  [string]$ZabbixServer,
+    [Parameter(Mandatory=$false)] [string]$DiscordWebhook = "",
+    [Parameter(Mandatory=$true)]  [string]$ZabbixVersion
+)
+
+$ErrorActionPreference = "Stop"
+
+# --- Input validation --------------------------------------------------------
+# SECURITY: Validate all arguments before use in URLs, config files, or process arguments.
+
+$AddrPattern    = '^[a-zA-Z0-9._\-]+$'
+$VersionPattern = '^\d+\.\d+\.\d+$'
+
+if ($ZabbixProxy -notmatch $AddrPattern) {
+    Write-Error "ZabbixProxy contains invalid characters: $ZabbixProxy"; exit 1
+}
+if ($ZabbixServer -notmatch $AddrPattern) {
+    Write-Error "ZabbixServer contains invalid characters: $ZabbixServer"; exit 1
+}
+if ($ZabbixVersion -notmatch $VersionPattern) {
+    Write-Error "ZabbixVersion must be in x.y.z format (e.g. 7.4.0), got: $ZabbixVersion"; exit 1
+}
+
+# Derive major.minor (e.g. "7.4.0" -> "7.4") for use in the CDN URL path
+$ZabbixMajorMinor = ($ZabbixVersion -split '\.' | Select-Object -First 2) -join '.'
+
+# --- Constants ---------------------------------------------------------------
+$ZABBIX_INSTALL_DIR  = "C:\Program Files\Zabbix Agent 2"
+$ZABBIX_CONF         = "$ZABBIX_INSTALL_DIR\zabbix_agent2.conf"
+$ZABBIX_CONF_D       = "$ZABBIX_INSTALL_DIR\zabbix_agent2.d"
+$ZABBIX_LOG          = "C:\ProgramData\Zabbix\logs\zabbix_agent2.log"
+$ZABBIX_SERVICE_NAME = "Zabbix Agent 2"
+$MSI_URL             = "https://cdn.zabbix.com/zabbix/binaries/stable/$ZabbixMajorMinor/$ZabbixVersion/zabbix_agent2-$ZabbixVersion-windows-amd64-openssl.msi"
+
+# SECURITY: Use a randomised temp filename to prevent TOCTOU race conditions.
+$TMP_MSI  = Join-Path $env:TEMP ("zabbix_agent2_" + [System.IO.Path]::GetRandomFileName() + ".msi")
+$TMP_LOG  = Join-Path $env:TEMP ("zabbix_agent2_" + [System.IO.Path]::GetRandomFileName() + ".log")
+
+# --- Helpers -----------------------------------------------------------------
+function Write-Log {
+    param([string]$Message)
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+}
+
+function Send-Discord {
+    param([string]$Title, [string]$Description, [int]$Color = 3066993)
+    if ([string]::IsNullOrEmpty($DiscordWebhook)) { return }
+    try {
+        # SECURITY: Use ConvertTo-Json for serialisation so all values are
+        # properly escaped — no manual string interpolation into JSON.
+        $payload = @{
+            embeds = @(@{
+                title       = $Title
+                description = $Description
+                color       = $Color
+                footer      = @{ text = "TacticalRMM - Zabbix Agent" }
+                timestamp   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            })
+        } | ConvertTo-Json -Depth 5
+        Invoke-RestMethod -Uri $DiscordWebhook -Method Post -Body $payload `
+            -ContentType "application/json" | Out-Null
+    } catch {
+        Write-Log "WARN: Discord notification failed: $_"
+    }
+}
+
+# SECURITY: Lock a file/directory so only SYSTEM and Administrators can read it.
+# Used for config files that may contain DB credentials.
+function Set-RestrictedAcl {
+    param([string]$Path)
+    try {
+        $acl = New-Object System.Security.AccessControl.FileSecurity
+        $acl.SetAccessRuleProtection($true, $false) # disable inheritance
+
+        $system = New-Object System.Security.Principal.SecurityIdentifier(
+            [System.Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+        $admins = New-Object System.Security.Principal.SecurityIdentifier(
+            [System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+
+        $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+        $allow       = [System.Security.AccessControl.AccessControlType]::Allow
+        $none        = [System.Security.AccessControl.InheritanceFlags]::None
+        $noProp      = [System.Security.AccessControl.PropagationFlags]::None
+
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($system, $fullControl, $none, $noProp, $allow)))
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($admins, $fullControl, $none, $noProp, $allow)))
+
+        Set-Acl -Path $Path -AclObject $acl
+    } catch {
+        Write-Log "WARN: Could not set ACL on $Path — $_"
+    }
+}
+
+# --- Gather system info ------------------------------------------------------
+$HostName  = $env:COMPUTERNAME
+$IPAddress = (Get-NetIPAddress -AddressFamily IPv4 |
+              Where-Object { $_.InterfaceAlias -notmatch 'Loopback|Teredo' } |
+              Select-Object -First 1).IPAddress
+
+Write-Log "Host:    $HostName ($IPAddress)"
+Write-Log "Proxy:   $ZabbixProxy"
+Write-Log "Target:  Zabbix Agent 2 $ZabbixVersion"
+
+# --- Check existing install --------------------------------------------------
+$PrevVersion = $null
+$Action      = "Installed"
+
+$regPath  = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+$regEntry = Get-ChildItem $regPath -ErrorAction SilentlyContinue |
+            Get-ItemProperty |
+            Where-Object { $_.DisplayName -like "*Zabbix Agent 2*" } |
+            Select-Object -First 1
+
+if ($regEntry) {
+    $PrevVersion = $regEntry.DisplayVersion
+    Write-Log "Installed version: $PrevVersion"
+
+    if ($PrevVersion -eq $ZabbixVersion) {
+        Write-Log "Already on version $ZabbixVersion — nothing to do."
+        exit 0
+    }
+
+    $Action = "Updated"
+    Write-Log "Upgrade needed: $PrevVersion -> $ZabbixVersion"
+
+    Write-Log "Stopping existing service..."
+    Stop-Service -Name $ZABBIX_SERVICE_NAME -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+} else {
+    Write-Log "Agent not installed — performing fresh install."
+}
+
+# --- Download MSI ------------------------------------------------------------
+Write-Log "Downloading MSI: $MSI_URL"
+try {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $MSI_URL -OutFile $TMP_MSI -UseBasicParsing
+} catch {
+    $errMsg = "Failed to download MSI: $_"
+    Write-Log "ERROR: $errMsg"
+    Send-Discord -Title "❌ Zabbix Agent Install Failed" `
+        -Description "**Host:** $HostName`n**IP:** $IPAddress`n**Reason:** $errMsg" `
+        -Color 15158332
+    Remove-Item -Path $TMP_MSI -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
+# SECURITY: Verify the MSI is signed by Zabbix before executing it.
+# This catches a tampered file or a compromised download.
+Write-Log "Verifying MSI digital signature..."
+$sig = Get-AuthenticodeSignature -FilePath $TMP_MSI
+if ($sig.Status -ne 'Valid') {
+    $errMsg = "MSI signature is invalid or untrusted (status: $($sig.Status)). Aborting."
+    Write-Log "ERROR: $errMsg"
+    Send-Discord -Title "❌ Zabbix Agent Install Failed" `
+        -Description "**Host:** $HostName`n**IP:** $IPAddress`n**Reason:** $errMsg" `
+        -Color 15158332
+    Remove-Item -Path $TMP_MSI -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+Write-Log "Signature valid — signed by: $($sig.SignerCertificate.Subject)"
+
+# --- Run installer -----------------------------------------------------------
+Write-Log "Running silent MSI install..."
+$proc = Start-Process -FilePath "msiexec.exe" -Wait -PassThru -NoNewWindow -ArgumentList @(
+    "/i", $TMP_MSI, "/qn",
+    "/l*v", $TMP_LOG,
+    "SERVER=$ZabbixProxy",
+    "SERVERACTIVE=$ZabbixProxy",
+    "HOSTNAME=$HostName",
+    "INSTALLFOLDER=$ZABBIX_INSTALL_DIR"
+)
+
+# SECURITY: Delete the MSI and install log immediately — the log can contain
+# install-time values and sits in a user-readable temp directory.
+Remove-Item -Path $TMP_MSI -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $TMP_LOG -Force -ErrorAction SilentlyContinue
+
+if ($proc.ExitCode -notin @(0, 3010)) {
+    $errMsg = "MSI exited with code $($proc.ExitCode)"
+    Write-Log "ERROR: $errMsg"
+    Send-Discord -Title "❌ Zabbix Agent Install Failed" `
+        -Description "**Host:** $HostName`n**IP:** $IPAddress`n**Reason:** $errMsg" `
+        -Color 15158332
+    exit 1
+}
+
+# --- Write full configuration ------------------------------------------------
+Write-Log "Writing agent configuration..."
+New-Item -ItemType Directory -Force -Path $ZABBIX_CONF_D | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path $ZABBIX_LOG) | Out-Null
+
+@"
+# Zabbix Agent 2 Configuration
+# Managed by TacticalRMM - do not edit manually
+
+Hostname=$HostName
+LogFile=$ZABBIX_LOG
+LogFileSize=10
+
+# Agent accepts checks from the proxy only
+Server=$ZabbixProxy
+ServerActive=$ZabbixProxy
+
+# SECURITY: system.run (remote command execution) is disabled by default in
+# Zabbix Agent 2 and is intentionally not enabled here. Do not add
+# AllowKey=system.run[*] unless you have a specific, audited requirement.
+DenyKey=system.run[*]
+
+Timeout=10
+RefreshActiveChecks=120
+BufferSend=5
+BufferSize=200
+
+Include=$ZABBIX_CONF_D\*.conf
+"@ | Set-Content -Path $ZABBIX_CONF -Encoding UTF8
+
+# Lock the main config to Administrators/SYSTEM only
+Set-RestrictedAcl -Path $ZABBIX_CONF
+
+# --- Detect services & write plugin configs ----------------------------------
+$DetectedServices = @()
+Write-Log "Scanning for monitorable services..."
+
+# SQL Server — default and named instances
+$SqlInstances  = @()
+$SqlInstances += Get-Service -Name "MSSQLSERVER" -ErrorAction SilentlyContinue
+$SqlInstances += Get-Service -Name "MSSQL$*"     -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -ne "MSSQLSERVER" }
+
+if ($SqlInstances.Count -gt 0) {
+    $mssqlConf  = "# Microsoft SQL Server - Zabbix Agent 2 Plugin`r`n"
+    $mssqlConf += "# CREATE LOGIN zabbix WITH PASSWORD = 'StrongPassword!';`r`n"
+    $mssqlConf += "# GRANT VIEW SERVER STATE TO zabbix;`r`n"
+    $mssqlConf += "# GRANT VIEW ANY DEFINITION TO zabbix;`r`n`r`n"
+
+    foreach ($svc in $SqlInstances) {
+        if ($svc.Name -eq "MSSQLSERVER") {
+            $connStr     = "sqlserver://localhost:1433"
+            $sessionName = "default"
+            $label       = "MSSQLSERVER (Default)"
+        } else {
+            $namedPart   = $svc.Name -replace "^MSSQL\$", ""
+            $connStr     = "sqlserver://localhost\$namedPart"
+            $sessionName = $namedPart.ToLower()
+            $label       = "Named: $namedPart"
+        }
+        Write-Log "  [FOUND] SQL Server — $label"
+        $DetectedServices += "SQL Server ($label)"
+        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.Uri=$connStr`r`n"
+        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.User=zabbix`r`n"
+        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.Password=CHANGE_ME`r`n"
+        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.TLSConnect=disable`r`n`r`n"
+    }
+    $mssqlPath = "$ZABBIX_CONF_D\mssql.conf"
+    Set-Content -Path $mssqlPath -Value $mssqlConf -Encoding UTF8
+    Set-RestrictedAcl -Path $mssqlPath
+    Write-Log "  SQL Server config written — UPDATE CREDENTIALS in $mssqlPath"
+}
+
+# MySQL / MariaDB
+$mysqlSvc = Get-Service -Name @("MySQL*","MariaDB*") -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($mysqlSvc) {
+    $label = if ($mysqlSvc.Name -like "MariaDB*") { "MariaDB" } else { "MySQL" }
+    Write-Log "  [FOUND] $label"; $DetectedServices += $label
+    $mysqlPath = "$ZABBIX_CONF_D\mysql.conf"
+    @"
+# $label - Zabbix Agent 2 Plugin
+# CREATE USER 'zabbix'@'localhost' IDENTIFIED BY 'StrongPassword!';
+# GRANT REPLICATION CLIENT, PROCESS, SHOW DATABASES, SHOW VIEW ON *.* TO 'zabbix'@'localhost';
+
+Plugins.Mysql.Sessions.local.Uri=tcp://localhost:3306
+Plugins.Mysql.Sessions.local.User=zabbix
+Plugins.Mysql.Sessions.local.Password=CHANGE_ME
+"@ | Set-Content -Path $mysqlPath -Encoding UTF8
+    Set-RestrictedAcl -Path $mysqlPath
+    Write-Log "  MySQL config written — UPDATE CREDENTIALS"
+}
+
+# PostgreSQL
+$pgSvc = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($pgSvc) {
+    Write-Log "  [FOUND] PostgreSQL"; $DetectedServices += "PostgreSQL"
+    $pgPath = "$ZABBIX_CONF_D\postgresql.conf"
+    @"
+# PostgreSQL - Zabbix Agent 2 Plugin
+# CREATE USER zabbix WITH PASSWORD 'StrongPassword!';
+# GRANT pg_monitor TO zabbix;
+
+Plugins.PostgreSQL.Sessions.local.Uri=tcp://localhost:5432
+Plugins.PostgreSQL.Sessions.local.User=zabbix
+Plugins.PostgreSQL.Sessions.local.Password=CHANGE_ME
+Plugins.PostgreSQL.Sessions.local.Database=postgres
+"@ | Set-Content -Path $pgPath -Encoding UTF8
+    Set-RestrictedAcl -Path $pgPath
+    Write-Log "  PostgreSQL config written — UPDATE CREDENTIALS"
+}
+
+# IIS
+$iisSvc = Get-Service -Name "W3SVC" -ErrorAction SilentlyContinue
+if ($iisSvc) {
+    Write-Log "  [FOUND] IIS"; $DetectedServices += "IIS"
+    "# IIS monitored via Windows perf counters. Use 'Windows IIS by Zabbix agent' template." |
+        Set-Content -Path "$ZABBIX_CONF_D\iis_notes.conf" -Encoding UTF8
+}
+
+# Redis
+$redisSvc = Get-Service -Name "Redis*" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($redisSvc) {
+    Write-Log "  [FOUND] Redis"; $DetectedServices += "Redis"
+    "Plugins.Redis.Sessions.local.Uri=tcp://localhost:6379" |
+        Set-Content -Path "$ZABBIX_CONF_D\redis.conf" -Encoding UTF8
+}
+
+# --- Start service -----------------------------------------------------------
+Write-Log "Starting $ZABBIX_SERVICE_NAME..."
+Start-Sleep -Seconds 1
+Start-Service -Name $ZABBIX_SERVICE_NAME -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+
+$finalSvc = Get-Service -Name $ZABBIX_SERVICE_NAME -ErrorAction SilentlyContinue
+if ($finalSvc.Status -ne "Running") {
+    $errMsg = "Service failed to start (status: $($finalSvc.Status))"
+    Write-Log "ERROR: $errMsg"
+    Send-Discord -Title "❌ Zabbix Agent Failed to Start" `
+        -Description "**Host:** $HostName`n**IP:** $IPAddress`n**Version:** $ZabbixVersion`n**Reason:** $errMsg" `
+        -Color 15158332
+    exit 1
+}
+
+# --- Send Discord notification -----------------------------------------------
+$ServicesMsg = if ($DetectedServices.Count -gt 0) { $DetectedServices -join ", " } else { "None detected" }
+
+if ($Action -eq "Updated") {
+    $VersionMsg = "**Version:** $PrevVersion -> $ZabbixVersion"; $Color = 3447003
+} else {
+    $VersionMsg = "**Version:** $ZabbixVersion"; $Color = 3066993
+}
+
+$CredWarning = ""
+if ($DetectedServices.Count -gt 0) {
+    $CredWarning = "`n⚠️ Action Required: Update DB credentials in $ZABBIX_CONF_D\"
+}
+
+Send-Discord `
+    -Title "✅ Zabbix Agent $Action (Windows)" `
+    -Description "**Host:** $HostName`n**IP:** $IPAddress`n$VersionMsg`n**Proxy:** $ZabbixProxy`n**Services Detected:** $ServicesMsg$CredWarning" `
+    -Color $Color
+
+Write-Log "Done. Action: $Action | Services: $ServicesMsg"
+exit 0
