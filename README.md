@@ -17,7 +17,9 @@ curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix
 ```
 
 ## Zabix Agent
-Installs a generic Zabbix agent on systems to be monitored. Will configure it to use a local proxy.
+Installs a generic Zabbix agent on systems to be monitored. Will configure it to use a local proxy.  
+
+Designed to be run from within TactcialRMM, it obtains values from the site, and global variables.
 
 ### Linux Agent
 ```
