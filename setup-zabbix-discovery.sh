@@ -120,17 +120,18 @@ API_ID=1
 
 zabbix_api() {
     local method="$1" params="$2"
-    local auth_field=""
-    [[ -n "$AUTH_TOKEN" ]] && auth_field="\"auth\": \"${AUTH_TOKEN}\","
+
+    # Zabbix 7.x: auth token is passed as Authorization: Bearer header, not in the request body
+    local -a curl_args=(-s -X POST "${ZABBIX_URL}/api_jsonrpc.php"
+        -H "Content-Type: application/json")
+    [[ -n "$AUTH_TOKEN" ]] && curl_args+=(-H "Authorization: Bearer ${AUTH_TOKEN}")
 
     local response
-    response=$(curl -s -X POST "${ZABBIX_URL}/api_jsonrpc.php" \
-        -H "Content-Type: application/json" \
+    response=$(curl "${curl_args[@]}" \
         -d "{
             \"jsonrpc\": \"2.0\",
             \"method\": \"${method}\",
             \"params\": ${params},
-            ${auth_field}
             \"id\": ${API_ID}
         }" 2>/dev/null)
 
