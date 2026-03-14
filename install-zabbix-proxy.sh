@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Zabbix Proxy - Interactive Install Script (Debian)
-# Supports: Debian 11 (Bullseye), Debian 12 (Bookworm)
+# Supports: Debian 11 (Bullseye), Debian 12 (Bookworm), Debian 13 (Trixie)
 #
 # Fixed settings (not prompted):
 #   - Proxy mode  : Active (proxy initiates connection to server)
@@ -50,6 +50,7 @@ die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 case "$VERSION_CODENAME" in
     bullseye) OS_VER="11" ;;
     bookworm)  OS_VER="12" ;;
+    trixie)    OS_VER="13" ;;
     *) die "Unsupported Debian version: $VERSION_CODENAME (need bullseye or bookworm)" ;;
 esac
 
