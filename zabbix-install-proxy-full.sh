@@ -241,7 +241,6 @@ REPLY=""; prompt_value "Start HTTP pollers" "1";                                
 REPLY=""; prompt_value "Start IPMI pollers (0 = disabled)" "0";                                   START_IPMI_POLLERS="$REPLY"
 REPLY=""; prompt_value "Config frequency in seconds (how often proxy fetches config from server)" "300"; CONFIG_FREQUENCY="$REPLY"
 REPLY=""; prompt_value "Data sender frequency in seconds (how often proxy flushes data to server)" "5";  DATA_SENDER_FREQUENCY="$REPLY"
-REPLY=""; prompt_value "Local buffer in seconds (hold data if server unreachable)" "3600";               PROXY_LOCAL_BUFFER="$REPLY"
 
 # --- Summary & confirm -------------------------------------------------------
 print_section "Configuration Summary"
@@ -270,7 +269,7 @@ echo -e "    HTTP pollers            $START_HTTP_POLLERS"
 echo -e "    IPMI pollers            $START_IPMI_POLLERS"
 echo -e "    Config frequency        ${CONFIG_FREQUENCY}s"
 echo -e "    Data sender frequency   ${DATA_SENDER_FREQUENCY}s"
-echo -e "    Local buffer            ${PROXY_LOCAL_BUFFER}s"
+echo -e "    Buffer mode             hybrid (memory + disk fallback)"
 echo ""
 
 prompt_confirm "Proceed with installation" || { echo "Aborted."; exit 0; }
@@ -440,15 +439,19 @@ ${PSK_BLOCK}
 
 StartPollers=${START_POLLERS}
 StartIPMIPollers=${START_IPMI_POLLERS}
-StartPreprocessingWorkers=${START_PREPROCESSORS}
+StartPreprocessors=${START_PREPROCESSORS}
 StartHTTPPollers=${START_HTTP_POLLERS}
 StartJavaPollers=0
 
 ProxyConfigFrequency=${CONFIG_FREQUENCY}
 ProxyDataSenderFrequency=${DATA_SENDER_FREQUENCY}
 
-ProxyLocalBuffer=${PROXY_LOCAL_BUFFER}
-ProxyOfflineBuffer=${PROXY_LOCAL_BUFFER}
+# Zabbix 7.x uses hybrid buffer mode by default (memory + disk fallback).
+# ProxyLocalBuffer must be 0 when ProxyBufferMode=hybrid or memory.
+ProxyBufferMode=hybrid
+ProxyMemoryBufferSize=64M
+ProxyLocalBuffer=0
+ProxyOfflineBuffer=1
 
 Timeout=10
 EOF
