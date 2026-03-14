@@ -10,7 +10,7 @@
 #   $4 = {{global.ZabbixVersion}}  e.g. 7.4
 # =============================================================================
 
-set -euo pipefail
+set -eo pipefail
 
 # --- Arguments ---------------------------------------------------------------
 # Strip surrounding single quotes that TacticalRMM adds when passing
@@ -330,4 +330,3 @@ send_discord "✅ Zabbix Agent ${ACTION}" \
 
 log "Done. Action: $ACTION | Services: $SERVICES_MSG"
 exit 0
-
