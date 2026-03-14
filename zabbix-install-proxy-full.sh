@@ -6,7 +6,7 @@
 # Prompts for all settings — nothing is hardcoded.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-proxy-full.sh | sudo bash
+#   sudo bash <(curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-proxy-full.sh)
 #   sudo ./install-zabbix-proxy-full.sh
 # =============================================================================
 
@@ -36,17 +36,6 @@ log_info()  { echo -e "  ${YELLOW}ℹ${RESET}  $1"; }
 log_warn()  { echo -e "  ${YELLOW}⚠${RESET}  $1" >&2; }
 die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 
-# --- Reconnect prompts to terminal -------------------------------------------
-# When piped via curl | bash, stdin (fd 0) is the pipe bash reads the script
-# from. Opening /dev/tty on fd 3 instead leaves fd 0 untouched so bash keeps
-# reading the script, while all read prompts use fd 3 (the terminal).
-if [[ -t 0 ]]; then
-    TTY_FD=0
-else
-    exec 3</dev/tty || die "Cannot open /dev/tty — run directly: sudo bash install-zabbix-proxy-full.sh"
-    TTY_FD=3
-fi
-
 # --- Must run as root --------------------------------------------------------
 [[ $EUID -ne 0 ]] && die "Run as root: sudo ./install-zabbix-proxy-full.sh"
 
@@ -70,11 +59,11 @@ prompt_value() {
     local label="$1" default="$2"
     REPLY=""
     if [[ -n "$default" ]]; then
-        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD || true
+        read -rp "  ${label} [${default}]: " REPLY
         [[ -z "$REPLY" ]] && REPLY="$default"
     else
         while [[ -z "$REPLY" ]]; do
-            read -rp "  ${label}: " REPLY <&$TTY_FD || true
+            read -rp "  ${label}: " REPLY
         done
     fi
 }
@@ -83,7 +72,7 @@ prompt_secret() {
     local label="$1"
     SECRET_REPLY=""
     while [[ -z "$SECRET_REPLY" ]]; do
-        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD || true
+        read -rsp "  ${label}: " SECRET_REPLY
         echo ""
         [[ -z "$SECRET_REPLY" ]] && echo -e "  ${RED}Value cannot be empty.${RESET}"
     done
@@ -92,7 +81,7 @@ prompt_secret() {
 prompt_confirm() {
     local question="$1" default="${2:-y}"
     local prompt; [[ "$default" == "y" ]] && prompt="[Y/n]" || prompt="[y/N]"
-    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD || true
+    read -rp "  ${question} ${prompt}: " ans
     ans="${ans:-$default}"
     [[ "${ans,,}" == "y" ]]
 }
@@ -106,7 +95,7 @@ prompt_choice() {
     done
     local choice
     while true; do
-        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD || true
+        read -rp "  Choice [1-${#options[@]}]: " choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             REPLY="${options[$((choice-1))]}"; return 0
         fi
