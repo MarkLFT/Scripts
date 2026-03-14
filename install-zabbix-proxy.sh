@@ -316,15 +316,19 @@ ${PSK_BLOCK}
 
 StartPollers=${START_POLLERS}
 StartIPMIPollers=${START_IPMI_POLLERS}
-StartPreprocessingWorkers=${START_PREPROCESSORS}
+StartPreprocessors=${START_PREPROCESSORS}
 StartHTTPPollers=${START_HTTP_POLLERS}
 StartJavaPollers=0
 
 ProxyConfigFrequency=${CONFIG_FREQUENCY}
 ProxyDataSenderFrequency=${DATA_SENDER_FREQUENCY}
 
-ProxyLocalBuffer=${PROXY_LOCAL_BUFFER}
-ProxyOfflineBuffer=${PROXY_LOCAL_BUFFER}
+# Zabbix 7.x uses hybrid buffer mode by default (memory + disk fallback).
+# ProxyLocalBuffer must be 0 when ProxyBufferMode=hybrid or memory.
+ProxyBufferMode=hybrid
+ProxyMemoryBufferSize=64M
+ProxyLocalBuffer=0
+ProxyOfflineBuffer=1
 
 Timeout=10
 EOF
