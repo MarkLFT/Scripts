@@ -21,11 +21,6 @@ ZABBIX_VERSION=$(echo "${4:-}"  | tr -d "'")
 AGENT_CONF="/etc/zabbix/zabbix_agent2.conf"
 AGENT_CONF_D="/etc/zabbix/zabbix_agent2.d"
 
-# --- Debug (temporary) -------------------------------------------------------
-echo "DEBUG $1 hex: $(printf '%s' "${1:-}" | xxd | head -1)"
-echo "DEBUG PROXY after strip: |${ZABBIX_PROXY}|"
-echo "DEBUG SERVER after strip: |${ZABBIX_SERVER}|"
-
 # --- Input validation --------------------------------------------------------
 # SECURITY: Validate all arguments before use in URLs, config files, or commands.
 
