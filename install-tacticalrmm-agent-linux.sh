@@ -203,6 +203,14 @@ log_ok "Client: $CLIENT_NAME (ID: $CLIENT_ID)"
 print_section "Site"
 log_info "Loading sites for $CLIENT_NAME..."
 ALL_SITES_JSON=$(trmm_get "sites/")
+
+# Validate the API response is JSON before filtering
+if ! echo "$ALL_SITES_JSON" | jq empty 2>/dev/null; then
+    log_warn "Unexpected response from sites/ endpoint:"
+    echo "$ALL_SITES_JSON" | head -3
+    die "Could not load sites — check API key has Sites permission"
+fi
+
 SITES_JSON=$(echo "$ALL_SITES_JSON" | jq --argjson cid "${CLIENT_ID}" "[.[] | select(.client == \$cid)]")
 SITE_COUNT=$(echo "$SITES_JSON" | jq 'length')
 [[ "$SITE_COUNT" -eq 0 ]] && die "No sites found for $CLIENT_NAME — create a site first"
