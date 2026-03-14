@@ -33,12 +33,17 @@ log_info()  { echo -e "  ${YELLOW}ℹ${RESET}  $1"; }
 log_warn()  { echo -e "  ${YELLOW}⚠${RESET}  $1" >&2; }
 die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 
-# --- Reconnect stdin to terminal ---------------------------------------------
-# When the script is piped via curl | bash, stdin is the pipe and read
-# commands receive EOF immediately. Redirecting to /dev/tty restores
-# interactive input so all prompts work correctly.
-if [[ ! -t 0 ]]; then
-    exec < /dev/tty || die "Cannot open /dev/tty for interactive input. Run the script directly instead of piping."
+# --- Reconnect prompts to terminal -------------------------------------------
+# When piped via curl | bash, stdin (fd 0) is the pipe that bash uses to read
+# the script itself. Replacing stdin with /dev/tty (exec < /dev/tty) causes
+# bash to lose the rest of the script and freeze.
+# Instead, open /dev/tty on fd 3 and direct all read calls there, leaving
+# fd 0 untouched so bash can keep reading the script from the pipe.
+if [[ -t 0 ]]; then
+    TTY_FD=0
+else
+    exec 3</dev/tty || { echo "ERROR: Cannot open /dev/tty — run the script directly: sudo bash install-zabbix-proxy.sh" >&2; exit 1; }
+    TTY_FD=3
 fi
 
 # --- Must run as root --------------------------------------------------------
@@ -53,7 +58,7 @@ case "$VERSION_CODENAME" in
     bullseye) OS_VER="11" ;;
     bookworm)  OS_VER="12" ;;
     trixie)    OS_VER="13" ;;
-    *) die "Unsupported Debian version: $VERSION_CODENAME (supported bullseye, bookworm, or trixie)" ;;
+    *) die "Unsupported Debian version: $VERSION_CODENAME (supported: bullseye, bookworm, trixie)" ;;
 esac
 
 # =============================================================================
@@ -64,11 +69,11 @@ prompt_value() {
     local label="$1" default="$2"
     REPLY=""
     if [[ -n "$default" ]]; then
-        read -rp "  ${label} [${default}]: " REPLY
+        read -rp "  ${label} [${default}]: " REPLY <&$TTY_FD
         [[ -z "$REPLY" ]] && REPLY="$default"
     else
         while [[ -z "$REPLY" ]]; do
-            read -rp "  ${label}: " REPLY
+            read -rp "  ${label}: " REPLY <&$TTY_FD
         done
     fi
 }
@@ -77,7 +82,7 @@ prompt_secret() {
     local label="$1"
     SECRET_REPLY=""
     while [[ -z "$SECRET_REPLY" ]]; do
-        read -rsp "  ${label}: " SECRET_REPLY
+        read -rsp "  ${label}: " SECRET_REPLY <&$TTY_FD
         echo ""
         [[ -z "$SECRET_REPLY" ]] && echo -e "  ${RED}Value cannot be empty.${RESET}"
     done
@@ -86,7 +91,7 @@ prompt_secret() {
 prompt_confirm() {
     local question="$1" default="${2:-y}"
     local prompt; [[ "$default" == "y" ]] && prompt="[Y/n]" || prompt="[y/N]"
-    read -rp "  ${question} ${prompt}: " ans
+    read -rp "  ${question} ${prompt}: " ans <&$TTY_FD
     ans="${ans:-$default}"
     [[ "${ans,,}" == "y" ]]
 }
@@ -100,7 +105,7 @@ prompt_choice() {
     done
     local choice
     while true; do
-        read -rp "  Choice [1-${#options[@]}]: " choice
+        read -rp "  Choice [1-${#options[@]}]: " choice <&$TTY_FD
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
             REPLY="${options[$((choice-1))]}"; return 0
         fi
