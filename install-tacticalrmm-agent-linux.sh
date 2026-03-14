@@ -289,28 +289,44 @@ fi
 
 print_section "Installing TacticalRMM Agent"
 
-# Get latest release version from GitHub
+# Get latest release info from GitHub and find the correct asset
 log_info "Checking latest rmmagent release..."
-LATEST_VERSION=$(curl -s https://api.github.com/repos/amidaware/rmmagent/releases/latest \
-    | jq -r '.tag_name' 2>/dev/null)
+RELEASE_JSON=$(curl -s https://api.github.com/repos/amidaware/rmmagent/releases/latest)
+LATEST_VERSION=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
 
-if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
-    log_warn "Could not determine latest version — using v2.9.1"
-    LATEST_VERSION="v2.9.1"
+if [[ -z "$LATEST_VERSION" ]]; then
+    die "Could not determine latest rmmagent version from GitHub API"
 fi
 log_info "Version: $LATEST_VERSION"
 
-AGENT_URL="https://github.com/amidaware/rmmagent/releases/download/${LATEST_VERSION}/rmmagent-linux-${ARCH}.tar.gz"
-AGENT_TAR="$TMPDIR_WORK/rmmagent.tar.gz"
+# Find the download URL for the correct architecture from the actual release assets
+# Asset names vary by release — look it up rather than guess the format
+AGENT_URL=$(echo "$RELEASE_JSON" | jq -r     --arg arch "$ARCH"     '.assets[] | select(.name | test("linux") and test($arch)) | .browser_download_url'     | head -1)
 
-log_info "Downloading rmmagent ($ARCH)..."
-wget -q "$AGENT_URL" -O "$AGENT_TAR" 2>/dev/null \
-    || die "Could not download rmmagent from GitHub: $AGENT_URL"
+if [[ -z "$AGENT_URL" ]]; then
+    # List available assets to help diagnose
+    log_warn "Available assets for $LATEST_VERSION:"
+    echo "$RELEASE_JSON" | jq -r '.assets[].name' | sed 's/^/    /'
+    die "Could not find a Linux $ARCH asset in release $LATEST_VERSION"
+fi
 
+log_info "Downloading: $(basename "$AGENT_URL")"
+AGENT_DL="$TMPDIR_WORK/rmmagent-download"
+wget -q "$AGENT_URL" -O "$AGENT_DL" 2>/dev/null     || die "Could not download rmmagent from: $AGENT_URL"
+
+# Handle both tar.gz and plain binary formats
 log_info "Installing rmmagent binary..."
-tar -xzf "$AGENT_TAR" -C "$TMPDIR_WORK/"
-AGENT_BIN=$(find "$TMPDIR_WORK" -name "rmmagent" -type f | head -1)
-[[ -z "$AGENT_BIN" ]] && die "rmmagent binary not found in downloaded archive"
+if file "$AGENT_DL" | grep -q 'gzip\|tar'; then
+    tar -xzf "$AGENT_DL" -C "$TMPDIR_WORK/"
+    AGENT_BIN=$(find "$TMPDIR_WORK" -name "rmmagent" -type f | head -1)
+elif file "$AGENT_DL" | grep -q 'ELF'; then
+    AGENT_BIN="$AGENT_DL"
+else
+    # Unknown format — try treating as binary directly
+    AGENT_BIN="$AGENT_DL"
+fi
+
+[[ -z "$AGENT_BIN" ]] && die "rmmagent binary not found in downloaded file"
 
 mkdir -p /usr/local/bin
 cp "$AGENT_BIN" /usr/local/bin/rmmagent
