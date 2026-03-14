@@ -73,7 +73,6 @@ START_HTTP_POLLERS=1
 START_IPMI_POLLERS=0
 CONFIG_FREQUENCY=300
 DATA_SENDER_FREQUENCY=5
-PROXY_LOCAL_BUFFER=3600
 
 # =============================================================================
 # PROMPT HELPERS
@@ -216,7 +215,7 @@ echo -e "    Preprocessors      $START_PREPROCESSORS"
 echo -e "    HTTP pollers       $START_HTTP_POLLERS"
 echo -e "    Config frequency   ${CONFIG_FREQUENCY}s"
 echo -e "    Data sender        ${DATA_SENDER_FREQUENCY}s"
-echo -e "    Local buffer       ${PROXY_LOCAL_BUFFER}s"
+echo -e "    Buffer mode        hybrid (memory + disk fallback)"
 echo ""
 
 prompt_confirm "Proceed with installation" || { echo "Aborted."; exit 0; }
@@ -299,8 +298,7 @@ cat > "$PROXY_CONF" <<EOF
 Hostname=${PROXY_HOSTNAME}
 ProxyMode=0
 
-Server=${ZABBIX_SERVER}
-ServerPort=${ZABBIX_SERVER_PORT}
+Server=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
 
 ListenIP=0.0.0.0
 ListenPort=${PROXY_PORT}
@@ -321,14 +319,12 @@ StartHTTPPollers=${START_HTTP_POLLERS}
 StartJavaPollers=0
 
 ProxyConfigFrequency=${CONFIG_FREQUENCY}
-ProxyDataSenderFrequency=${DATA_SENDER_FREQUENCY}
+DataSenderFrequency=${DATA_SENDER_FREQUENCY}
 
-# Zabbix 7.x uses hybrid buffer mode by default (memory + disk fallback).
-# ProxyLocalBuffer must be 0 when ProxyBufferMode=hybrid or memory.
+# Zabbix 7.x hybrid buffer mode: data held in memory, flushed to disk on stop/full.
+# ProxyLocalBuffer and ProxyOfflineBuffer must NOT be set when ProxyBufferMode=hybrid.
 ProxyBufferMode=hybrid
 ProxyMemoryBufferSize=64M
-ProxyLocalBuffer=0
-ProxyOfflineBuffer=1
 
 Timeout=10
 EOF
