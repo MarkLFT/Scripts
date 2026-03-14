@@ -51,7 +51,7 @@ case "$VERSION_CODENAME" in
     bullseye) OS_VER="11" ;;
     bookworm)  OS_VER="12" ;;
     trixie)    OS_VER="13" ;;
-    *) die "Unsupported Debian version: $VERSION_CODENAME (need bullseye or bookworm)" ;;
+    *) die "Unsupported Debian version: $VERSION_CODENAME (supported bullseye, bookworm, or trixie)" ;;
 esac
 
 # =============================================================================
