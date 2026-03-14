@@ -153,6 +153,8 @@ TMP_DEB=$(mktemp /tmp/zabbix-release-XXXXXX.deb)
 # Ensure temp file is cleaned up on any exit
 trap 'rm -f "$TMP_DEB"' EXIT
 
+log "Trying URL: $ZABBIX_RELEASE_URL"
+
 if ! curl -fsSL "$ZABBIX_RELEASE_URL" -o "$TMP_DEB" 2>/dev/null; then
     warn "Primary URL failed, trying fallback..."
     curl -fsSL "$ZABBIX_RELEASE_URL_ALT" -o "$TMP_DEB" || {
