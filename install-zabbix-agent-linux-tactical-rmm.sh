@@ -300,6 +300,21 @@ chown -R root:zabbix "$AGENT_CONF_D" 2>/dev/null || true
 chmod 750 "$AGENT_CONF_D"
 chmod 640 "${AGENT_CONF_D}"/*.conf 2>/dev/null || true
 
+# --- Firewall ----------------------------------------------------------------
+log "Configuring firewall for Zabbix agent (port 10050/tcp)..."
+if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow 10050/tcp comment "Zabbix Agent 2" >/dev/null 2>&1 \
+        && log "UFW: allowed 10050/tcp" \
+        || warn "UFW: failed to add rule for 10050/tcp"
+elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+    firewall-cmd --permanent --add-port=10050/tcp >/dev/null 2>&1 \
+        && firewall-cmd --reload >/dev/null 2>&1 \
+        && log "firewalld: allowed 10050/tcp" \
+        || warn "firewalld: failed to add rule for 10050/tcp"
+else
+    log "No active firewall detected (ufw/firewalld) — ensure port 10050/tcp is open if a firewall is in use."
+fi
+
 # --- Enable & restart agent --------------------------------------------------
 log "Restarting zabbix-agent2..."
 systemctl enable zabbix-agent2 --quiet

@@ -325,6 +325,24 @@ if ($redisSvc) {
         Set-Content -Path "$ZABBIX_CONF_D\redis.conf" -Encoding UTF8
 }
 
+# --- Firewall ----------------------------------------------------------------
+Write-Log "Configuring Windows Firewall for Zabbix agent (port 10050/tcp)..."
+$fwRuleName = "Zabbix Agent 2 (TCP-In 10050)"
+$existingRule = Get-NetFirewallRule -DisplayName $fwRuleName -ErrorAction SilentlyContinue
+if ($existingRule) {
+    Write-Log "Firewall rule '$fwRuleName' already exists — skipping."
+} else {
+    try {
+        New-NetFirewallRule -DisplayName $fwRuleName `
+            -Direction Inbound -Protocol TCP -LocalPort 10050 `
+            -Action Allow -Profile Domain,Private `
+            -Description "Allow Zabbix proxy to reach Zabbix Agent 2 for passive checks" | Out-Null
+        Write-Log "Firewall rule created: $fwRuleName (Domain,Private profiles)"
+    } catch {
+        Write-Log "WARN: Could not create firewall rule: $_"
+    }
+}
+
 # --- Start service -----------------------------------------------------------
 Write-Log "Starting $ZABBIX_SERVICE_NAME..."
 Start-Sleep -Seconds 1

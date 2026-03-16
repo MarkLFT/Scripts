@@ -39,22 +39,22 @@ Sends a Discord notification on install or upgrade.
 ### Linux Agent
 Via TacticalRMM with site variables:
 ```
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux.sh | sudo bash -s -- "{{site.ZabbixProxy}}" "{{site.ZabbixServer}}" "{{global.DiscordWebhook}}" "{{global.ZabbixVersion}}"
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "{{site.ZabbixProxy}}" "{{site.ZabbixServer}}" "{{global.DiscordWebhook}}" "{{global.ZabbixVersion}}"
 ```
 Manual use with real values:
 ```
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux.sh | sudo bash -s -- "10.10.1.5" "10.10.0.10" "https://discord.com/api/webhooks/..." "7.4"
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "10.10.1.5" "10.10.0.10" "https://discord.com/api/webhooks/..." "7.4"
 ```
 
 ### Windows Agent
 Via TacticalRMM (recommended):
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows.ps1))) -ZabbixProxy "{{site.ZabbixProxy}}" -ZabbixServer "{{site.ZabbixServer}}" -DiscordWebhook "{{global.DiscordWebhook}}" -ZabbixVersion "{{global.ZabbixVersion}}"
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1))) -ZabbixProxy "{{site.ZabbixProxy}}" -ZabbixServer "{{site.ZabbixServer}}" -DiscordWebhook "{{global.DiscordWebhook}}" -ZabbixVersion "{{global.ZabbixVersion}}"
 ```
 Manual use — download first then run:
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows.ps1 -OutFile "$env:TEMP\install-zabbix-agent-windows.ps1"
-& "$env:TEMP\install-zabbix-agent-windows.ps1" -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"
+Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1 -OutFile "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1"
+& "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1" -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"
 ```
 
 ## Zabbix Discovery
@@ -79,14 +79,10 @@ Installs the TacticalRMM agent on a host and registers it with your TacticalRMM 
 Connects to the TacticalRMM API to fetch available clients and sites so you can pick from a list — no need to look up IDs manually.  
 Mesh URL and token are retrieved automatically from the API — no manual configuration of MeshCentral required.
 
-**Prompts for:** TacticalRMM API URL, API key, client (list), site (list), agent type (Server/Workstation), auth token.
+**Prompts for:** TacticalRMM API URL, API key, client (list), site (list), agent type (Server/Workstation).
 
-> **API Key:** Generate in TacticalRMM under Settings → Global Settings → API Keys → Add API Key.  
+> **API Key:** Generate in TacticalRMM under Settings → Global Settings → API Keys → Add API Key.
 > The key is entered interactively and never stored in the script.
-
-> **Auth Token:** In TacticalRMM go to Agents → Install Agent → select Windows → Manual installation  
-> → click Show Manual Instructions → copy the value after `--auth`.  
-> This token is used to register the agent and can be reused for multiple installs until it expires.
 
 ### Linux Agent (Ubuntu / Debian)
 
@@ -95,10 +91,14 @@ Installs both the **MeshCentral agent** (required for Take Control / Remote Back
 The Linux agent is built from source using the community install script originally created by [netvolt](https://github.com/netvolt/LinuxRMM-Script) and maintained by [Nerdy-Technician](https://github.com/Nerdy-Technician/LinuxRMM-Script). This compiles the agent from the official [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source code using Go. Compilation takes a few minutes on first run — this is normal.
 
 > **Note:** This script targets the **community (free) licence**. The paid signed-agent installer from the TRMM UI is not required.
+>
+> **Auth Token (Linux only):** In TacticalRMM go to Agents → Install Agent → select Windows → Manual installation
+> → click Show Manual Instructions → copy the value after `--auth`.
+> This token is used to register the agent and can be reused for multiple installs until it expires.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-linux.sh \
-  -o /tmp/install-trmm-agent-linux.sh && sudo bash /tmp/install-trmm-agent-linux.sh
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-tacticalrmm-agent-linux.sh \
+  -o /tmp/install-tacticalrmm-agent-linux.sh && sudo bash /tmp/install-tacticalrmm-agent-linux.sh
 ```
 
 After installation verify both services are running:
@@ -109,8 +109,10 @@ systemctl status meshagent
 
 ### Windows Agent
 
+Uses the TacticalRMM deployment API to generate the installer automatically — no auth token needed.
+
 Run as Administrator:
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-windows.ps1 -OutFile "$env:TEMP\install-trmm-agent-windows.ps1"
-& "$env:TEMP\install-trmm-agent-windows.ps1"
+Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-tacticalrmm-agent-windows.ps1 -OutFile "$env:TEMP\install-tacticalrmm-agent-windows.ps1"
+& "$env:TEMP\install-tacticalrmm-agent-windows.ps1"
 ```

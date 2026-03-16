@@ -351,12 +351,20 @@ fi
 print_section "Firewall"
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     log_info "UFW is active. Active mode dials OUT — no inbound rule needed for normal operation."
-    if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for status queries or passive checks)" "n"; then
+    if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for agent active checks or status queries)" "n"; then
         ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null
         log_ok "UFW rule added for port ${PROXY_PORT}/tcp"
     fi
+elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+    log_info "firewalld is active. Active mode dials OUT — no inbound rule needed for normal operation."
+    if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for agent active checks or status queries)" "n"; then
+        firewall-cmd --permanent --add-port="${PROXY_PORT}/tcp" >/dev/null 2>&1 \
+            && firewall-cmd --reload >/dev/null 2>&1 \
+            && log_ok "firewalld rule added for port ${PROXY_PORT}/tcp" \
+            || log_warn "Failed to add firewalld rule for port ${PROXY_PORT}/tcp"
+    fi
 else
-    log_info "UFW not active — no firewall changes made."
+    log_info "No active firewall detected (ufw/firewalld) — no changes made."
 fi
 
 # =============================================================================

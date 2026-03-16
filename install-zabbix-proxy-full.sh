@@ -473,25 +473,45 @@ fi
 
 # --- Firewall ----------------------------------------------------------------
 print_section "Firewall"
+
+open_firewall_port() {
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null \
+            && log_ok "UFW rule added for port ${PROXY_PORT}/tcp" \
+            || log_warn "Failed to add UFW rule for port ${PROXY_PORT}/tcp"
+    elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --add-port="${PROXY_PORT}/tcp" >/dev/null 2>&1 \
+            && firewall-cmd --reload >/dev/null 2>&1 \
+            && log_ok "firewalld rule added for port ${PROXY_PORT}/tcp" \
+            || log_warn "Failed to add firewalld rule for port ${PROXY_PORT}/tcp"
+    fi
+}
+
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    log_info "UFW is active."
+    FIREWALL_NAME="UFW"
+elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+    FIREWALL_NAME="firewalld"
+else
+    FIREWALL_NAME=""
+fi
+
+if [[ -n "$FIREWALL_NAME" ]]; then
+    log_info "$FIREWALL_NAME is active."
     if [[ "$PROXY_MODE" -eq 0 ]]; then
         log_info "Active mode — proxy dials OUT, no inbound rule needed for normal operation."
-        if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for status queries or passive checks)" "n"; then
-            ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null
-            log_ok "UFW rule added for port ${PROXY_PORT}/tcp"
+        if prompt_confirm "Open port ${PROXY_PORT}/tcp anyway (for agent active checks or status queries)" "n"; then
+            open_firewall_port
         fi
     else
         log_info "Passive mode — Zabbix server will connect inbound to this proxy."
         if prompt_confirm "Open port ${PROXY_PORT}/tcp (required for passive mode)"; then
-            ufw allow "${PROXY_PORT}/tcp" comment "Zabbix Proxy" >/dev/null
-            log_ok "UFW rule added for port ${PROXY_PORT}/tcp"
+            open_firewall_port
         else
             log_warn "Port not opened — passive mode will not work until this is done manually"
         fi
     fi
 else
-    log_info "UFW not active — configure your firewall manually if needed (port: ${PROXY_PORT}/tcp)"
+    log_info "No active firewall detected (ufw/firewalld) — configure manually if needed (port: ${PROXY_PORT}/tcp)"
 fi
 
 # =============================================================================
