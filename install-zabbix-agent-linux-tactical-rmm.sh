@@ -418,19 +418,21 @@ elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewall
         && firewall-cmd --reload >/dev/null 2>&1 \
         && log "firewalld: allowed 10050/tcp" \
         || warn "firewalld: failed to add rule for 10050/tcp"
-elif command -v iptables &>/dev/null; then
+elif IPTABLES_BIN=$(command -v iptables 2>/dev/null || echo /usr/sbin/iptables) && [[ -x "$IPTABLES_BIN" ]]; then
     # Check if the rule already exists before adding
-    if ! iptables -C INPUT -p tcp --dport 10050 -j ACCEPT 2>/dev/null; then
-        iptables -A INPUT -p tcp --dport 10050 -m comment --comment "Zabbix Agent 2" -j ACCEPT \
+    if ! "$IPTABLES_BIN" -C INPUT -p tcp --dport 10050 -j ACCEPT 2>/dev/null; then
+        "$IPTABLES_BIN" -A INPUT -p tcp --dport 10050 -m comment --comment "Zabbix Agent 2" -j ACCEPT \
             && log "iptables: allowed 10050/tcp" \
             || warn "iptables: failed to add rule for 10050/tcp"
-        # Persist the rule if iptables-persistent is installed
-        if command -v netfilter-persistent &>/dev/null; then
-            netfilter-persistent save >/dev/null 2>&1 \
+        # Persist the rule
+        NETFILTER_BIN=$(command -v netfilter-persistent 2>/dev/null || echo /usr/sbin/netfilter-persistent)
+        IPTABLES_SAVE_BIN=$(command -v iptables-save 2>/dev/null || echo /usr/sbin/iptables-save)
+        if [[ -x "$NETFILTER_BIN" ]]; then
+            "$NETFILTER_BIN" save >/dev/null 2>&1 \
                 && log "iptables: rules saved via netfilter-persistent" \
                 || warn "iptables: failed to save rules"
-        elif [[ -d /etc/iptables ]]; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null \
+        elif [[ -d /etc/iptables && -x "$IPTABLES_SAVE_BIN" ]]; then
+            "$IPTABLES_SAVE_BIN" > /etc/iptables/rules.v4 2>/dev/null \
                 && log "iptables: rules saved to /etc/iptables/rules.v4" \
                 || warn "iptables: failed to save rules"
         else
