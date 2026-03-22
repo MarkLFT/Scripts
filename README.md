@@ -32,30 +32,39 @@ curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix
 
 Installs Zabbix Agent 2 on systems to be monitored. Configures it to connect to a local proxy.
 Designed to be run from within TacticalRMM — obtains values from site and global variables.
-Will auto-detect monitorable services (SQL Server, MySQL, PostgreSQL, Nginx, Apache, Docker, Redis) and write the appropriate plugin config stubs.
+Will auto-detect monitorable services (SQL Server, MySQL, PostgreSQL, Nginx, Apache, Docker, Redis) and configure the appropriate plugin.
+When SQL Server is detected the script installs the MSSQL loadable plugin, creates the `zabbix` SQL login with the required permissions (including msdb grants for SQL Agent job monitoring), and writes live credentials into the plugin config — no manual post-install steps required.
 Sends a Discord notification on install or upgrade.
 
 #### TacticalRMM Variables Required
 
-| Variable         | Scope  | Example                                |
-| ---------------- | ------ | -------------------------------------- |
-| `ZabbixProxy`    | Site   | `10.10.1.5`                            |
-| `ZabbixServer`   | Site   | `10.10.0.10`                           |
-| `DiscordWebhook` | Global | `https://discord.com/api/webhooks/...` |
-| `ZabbixVersion`  | Global | `7.4` (Linux) / `7.4.0` (Windows)      |
+| Variable               | Scope  | Example                                |
+| ---------------------- | ------ | -------------------------------------- |
+| `ZabbixProxy`          | Site   | `10.10.1.5`                            |
+| `ZabbixServer`         | Site   | `10.10.0.10`                           |
+| `DiscordWebhook`       | Global | `https://discord.com/api/webhooks/...` |
+| `ZabbixVersion`        | Global | `7.4` (Linux) / `7.4.0` (Windows)      |
+| `ZabbixMSSQLPassword`  | Global | Password for the `zabbix` SQL login    |
+| `MSSQLSAPassword`      | Site   | SA password (Linux only)               |
 
 #### Linux Agent
 
 Via TacticalRMM with site variables:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "{{site.ZabbixProxy}}" "{{site.ZabbixServer}}" "{{global.DiscordWebhook}}" "{{global.ZabbixVersion}}"
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "{{site.ZabbixProxy}}" "{{site.ZabbixServer}}" "{{global.DiscordWebhook}}" "{{global.ZabbixVersion}}" "{{global.ZabbixMSSQLPassword}}" "{{site.MSSQLSAPassword}}"
 ```
 
 Manual use with real values:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "10.10.1.5" "10.10.0.10" "https://discord.com/api/webhooks/..." "7.4"
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "10.10.1.5" "10.10.0.10" "https://discord.com/api/webhooks/..." "7.4" "ZabbixMSSQLPass!" "SAPassword!"
+```
+
+Force reconfigure (skips repo/install, rewrites all configs and recreates SQL logins):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-linux-tactical-rmm.sh | sudo bash -s -- "{{site.ZabbixProxy}}" "{{site.ZabbixServer}}" "{{global.DiscordWebhook}}" "{{global.ZabbixVersion}}" "{{global.ZabbixMSSQLPassword}}" "{{site.MSSQLSAPassword}}" "force"
 ```
 
 #### Windows Agent (Zabbix)
@@ -63,14 +72,20 @@ curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix
 Via TacticalRMM (recommended):
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1))) -ZabbixProxy "{{site.ZabbixProxy}}" -ZabbixServer "{{site.ZabbixServer}}" -DiscordWebhook "{{global.DiscordWebhook}}" -ZabbixVersion "{{global.ZabbixVersion}}"
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1))) -ZabbixProxy "{{site.ZabbixProxy}}" -ZabbixServer "{{site.ZabbixServer}}" -DiscordWebhook "{{global.DiscordWebhook}}" -ZabbixVersion "{{global.ZabbixVersion}}" -ZabbixMSSQLPassword "{{global.ZabbixMSSQLPassword}}"
 ```
 
 Manual use — download first then run:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1 -OutFile "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1"
-& "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1" -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0"
+& "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1" -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0" -ZabbixMSSQLPassword "ZabbixMSSQLPass!"
+```
+
+Force reconfigure (skips MSI download/install, rewrites all configs and recreates SQL logins):
+
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1))) -ZabbixProxy "{{site.ZabbixProxy}}" -ZabbixServer "{{site.ZabbixServer}}" -DiscordWebhook "{{global.DiscordWebhook}}" -ZabbixVersion "{{global.ZabbixVersion}}" -ZabbixMSSQLPassword "{{global.ZabbixMSSQLPassword}}" -Force
 ```
 
 ### Zabbix Discovery
@@ -86,6 +101,35 @@ Connects to the Zabbix API, fetches proxies and host groups, and creates the dis
 curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/setup-zabbix-discovery.sh \
   -o /tmp/setup-zabbix-discovery.sh && bash /tmp/setup-zabbix-discovery.sh
 ```
+
+### Zabbix SQL Server
+
+The Zabbix Agent 2 MSSQL plugin monitors SQL Server instances via a dedicated SQL login. The agent install scripts handle everything automatically when the `ZabbixMSSQLPassword` variable is set (and `MSSQLSAPassword` on Linux):
+
+1. Installs the `zabbix-agent2-plugin-mssql` loadable plugin package
+2. Creates (or updates) the `zabbix` SQL login with the provided password
+3. Grants server-level permissions: `VIEW SERVER STATE`, `VIEW ANY DEFINITION`
+4. Grants msdb permissions for SQL Agent job monitoring (`sysjobs`, `sysjobactivity`, `sysjobservers`, `agent_datetime`)
+5. Writes live credentials into the plugin config at `plugins.d/mssql.conf`
+6. Disables any loadable plugin configs whose binaries are not present (e.g. NVIDIA on a server without a GPU)
+7. Adds the `plugins.d/` Include directive to the main agent config
+
+No manual post-install steps are required.
+
+On Windows the script uses Windows Authentication (trusted connection as SYSTEM) to create the SQL login, so no SA password is needed. On Linux, the `MSSQLSAPassword` site variable is required to authenticate to SQL Server via `sqlcmd`.
+
+#### Plugin Config Location
+
+Session credentials are written into the package-installed plugin config, not a separate file:
+
+| OS | Config file path |
+| --- | --- |
+| Linux | `/etc/zabbix/zabbix_agent2.d/plugins.d/mssql.conf` |
+| Windows | `C:\Program Files\Zabbix Agent 2\zabbix_agent2.d\plugins.d\mssql.conf` |
+
+#### Apply the Zabbix Template
+
+In the Zabbix frontend, assign the **MSSQL by Zabbix agent 2** template to the host. This template provides out-of-the-box items, triggers, and dashboards for SQL Server monitoring.
 
 ---
 

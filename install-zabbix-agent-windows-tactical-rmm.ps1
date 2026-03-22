@@ -3,17 +3,23 @@
 # TacticalRMM - Zabbix Agent 2 Install / Update Script (Windows)
 #
 # Script Arguments (set in TacticalRMM):
-#   $ZabbixProxy    = {{site.ZabbixProxy}}      e.g. 10.10.1.5
-#   $ZabbixServer   = {{site.ZabbixServer}}     e.g. 10.10.0.10
-#   $DiscordWebhook = {{global.DiscordWebhook}} e.g. https://discord.com/api/webhooks/...
-#   $ZabbixVersion  = {{global.ZabbixVersion}}  e.g. 7.4.0
+#   $ZabbixProxy         = {{site.ZabbixProxy}}           e.g. 10.10.1.5
+#   $ZabbixServer        = {{site.ZabbixServer}}          e.g. 10.10.0.10
+#   $DiscordWebhook      = {{global.DiscordWebhook}}      e.g. https://discord.com/api/webhooks/...
+#   $ZabbixVersion       = {{global.ZabbixVersion}}       e.g. 7.4.0
+#   $ZabbixMSSQLPassword = {{global.ZabbixMSSQLPassword}} Password for the 'zabbix' SQL login (optional)
+#   -Force                                                 Force re-run even if already on target version
 # =============================================================================
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '',
+    Justification = 'TacticalRMM passes plain string arguments — SecureString is not usable here')]
 param(
     [Parameter(Mandatory=$true)]  [string]$ZabbixProxy,
     [Parameter(Mandatory=$true)]  [string]$ZabbixServer,
     [Parameter(Mandatory=$false)] [string]$DiscordWebhook = "",
-    [Parameter(Mandatory=$true)]  [string]$ZabbixVersion
+    [Parameter(Mandatory=$true)]  [string]$ZabbixVersion,
+    [Parameter(Mandatory=$false)] [string]$ZabbixMSSQLPassword = "",
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -129,21 +135,30 @@ if ($regEntry) {
     Write-Log "Installed version: $PrevVersion"
 
     if ($PrevVersion -eq $ZabbixVersion) {
-        Write-Log "Already on version $ZabbixVersion — nothing to do."
-        exit 0
+        if ($Force) {
+            Write-Log "Already on version $ZabbixVersion — Force flag set, reconfiguring."
+            $Action = "Reconfigured"
+        } else {
+            Write-Log "Already on version $ZabbixVersion — nothing to do."
+            exit 0
+        }
+    } else {
+        $Action = "Updated"
+        Write-Log "Upgrade needed: $PrevVersion -> $ZabbixVersion"
     }
 
-    $Action = "Updated"
-    Write-Log "Upgrade needed: $PrevVersion -> $ZabbixVersion"
-
-    Write-Log "Stopping existing service..."
-    Stop-Service -Name $ZABBIX_SERVICE_NAME -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    if ($Action -ne "Reconfigured") {
+        Write-Log "Stopping existing service..."
+        Stop-Service -Name $ZABBIX_SERVICE_NAME -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    }
 } else {
     Write-Log "Agent not installed — performing fresh install."
 }
 
-# --- Download MSI ------------------------------------------------------------
+# --- Download & install MSI (skip on reconfigure) ----------------------------
+if ($Action -ne "Reconfigured") {
+
 Write-Log "Downloading MSI: $MSI_URL"
 try {
     $ProgressPreference = 'SilentlyContinue'
@@ -198,6 +213,8 @@ if ($proc.ExitCode -notin @(0, 3010)) {
     exit 1
 }
 
+} # end skip-on-reconfigure
+
 # --- Write full configuration ------------------------------------------------
 Write-Log "Writing agent configuration..."
 New-Item -ItemType Directory -Force -Path $ZABBIX_CONF_D | Out-Null
@@ -226,6 +243,7 @@ BufferSend=5
 BufferSize=200
 
 Include=$ZABBIX_CONF_D\*.conf
+Include=$ZABBIX_CONF_D\plugins.d\*.conf
 "@ | Set-Content -Path $ZABBIX_CONF -Encoding UTF8
 
 # Lock the main config to Administrators/SYSTEM only
@@ -242,10 +260,72 @@ $SqlInstances += Get-Service -Name "MSSQL$*"     -ErrorAction SilentlyContinue |
                  Where-Object { $_.Name -ne "MSSQLSERVER" }
 
 if ($SqlInstances.Count -gt 0) {
-    $mssqlConf  = "# Microsoft SQL Server - Zabbix Agent 2 Plugin`r`n"
-    $mssqlConf += "# CREATE LOGIN zabbix WITH PASSWORD = 'StrongPassword!';`r`n"
-    $mssqlConf += "# GRANT VIEW SERVER STATE TO zabbix;`r`n"
-    $mssqlConf += "# GRANT VIEW ANY DEFINITION TO zabbix;`r`n`r`n"
+    $mssqlConfPwd = if (-not [string]::IsNullOrEmpty($ZabbixMSSQLPassword)) { $ZabbixMSSQLPassword } else { "CHANGE_ME" }
+
+    # Create/update the zabbix SQL login on each detected instance
+    if (-not [string]::IsNullOrEmpty($ZabbixMSSQLPassword)) {
+        $sqlcmdPath = (Get-Command sqlcmd -ErrorAction SilentlyContinue).Source
+        if ($sqlcmdPath) {
+            $escapedPwd = $ZabbixMSSQLPassword -replace "'", "''"
+            foreach ($svc in $SqlInstances) {
+                if ($svc.Name -eq "MSSQLSERVER") {
+                    $sqlInstance = "localhost"
+                    $sqlLabel    = "MSSQLSERVER (Default)"
+                } else {
+                    $namedPart   = $svc.Name -replace "^MSSQL\$", ""
+                    $sqlInstance = "localhost\$namedPart"
+                    $sqlLabel    = "Named: $namedPart"
+                }
+                Write-Log "  Creating/updating zabbix SQL login on $sqlLabel..."
+                $sqlLogin = @"
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'zabbix')
+    CREATE LOGIN [zabbix] WITH PASSWORD = N'$escapedPwd', CHECK_POLICY = OFF;
+ELSE
+    ALTER LOGIN [zabbix] WITH PASSWORD = N'$escapedPwd';
+GRANT VIEW SERVER STATE TO [zabbix];
+GRANT VIEW ANY DEFINITION TO [zabbix];
+"@
+                try {
+                    $output = & $sqlcmdPath -S $sqlInstance -E -b -Q $sqlLogin 2>&1
+                    $output | ForEach-Object { Write-Log "    $_" }
+                    Write-Log "  zabbix SQL login ready on $sqlLabel (server level)"
+                } catch {
+                    Write-Log "WARN: Failed to create zabbix SQL login on ${sqlLabel}: $_"
+                }
+
+                # Grant msdb permissions for SQL Agent job monitoring
+                Write-Log "  Granting msdb permissions on $sqlLabel..."
+                $sqlMsdb = @"
+USE [msdb];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'zabbix')
+    CREATE USER [zabbix] FOR LOGIN [zabbix];
+GRANT EXECUTE ON msdb.dbo.agent_datetime TO [zabbix];
+GRANT SELECT ON msdb.dbo.sysjobactivity TO [zabbix];
+GRANT SELECT ON msdb.dbo.sysjobservers TO [zabbix];
+GRANT SELECT ON msdb.dbo.sysjobs TO [zabbix];
+"@
+                try {
+                    $output = & $sqlcmdPath -S $sqlInstance -E -b -Q $sqlMsdb 2>&1
+                    $output | ForEach-Object { Write-Log "    $_" }
+                    Write-Log "  msdb permissions granted on $sqlLabel"
+                } catch {
+                    Write-Log "WARN: Failed to grant msdb permissions on ${sqlLabel}: $_"
+                }
+            }
+        } else {
+            Write-Log "WARN: sqlcmd not found — cannot create zabbix SQL login automatically"
+        }
+    } else {
+        Write-Log "WARN: ZabbixMSSQLPassword not set — writing placeholder credentials"
+    }
+
+    # Write session credentials into the package-installed plugins.d/mssql.conf.
+    # The package config already has the correct System.Path to the plugin binary.
+    $pluginsD     = "$ZABBIX_CONF_D\plugins.d"
+    $mssqlPluginConf = "$pluginsD\mssql.conf"
+
+    # Build session config block for each instance
+    $sessionBlock = "# --- Zabbix Agent Script: MSSQL Session Config ---`r`n"
 
     foreach ($svc in $SqlInstances) {
         if ($svc.Name -eq "MSSQLSERVER") {
@@ -260,15 +340,56 @@ if ($SqlInstances.Count -gt 0) {
         }
         Write-Log "  [FOUND] SQL Server — $label"
         $DetectedServices += "SQL Server ($label)"
-        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.Uri=$connStr`r`n"
-        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.User=zabbix`r`n"
-        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.Password=CHANGE_ME`r`n"
-        $mssqlConf += "Plugins.MSSQL.Sessions.$sessionName.TLSConnect=disable`r`n`r`n"
+        $sessionBlock += "Plugins.MSSQL.Sessions.$sessionName.Uri=$connStr`r`n"
+        $sessionBlock += "Plugins.MSSQL.Sessions.$sessionName.User=zabbix`r`n"
+        $sessionBlock += "Plugins.MSSQL.Sessions.$sessionName.Password=$mssqlConfPwd`r`n"
+        $sessionBlock += "Plugins.MSSQL.Sessions.$sessionName.Encrypt=disable`r`n"
+        $sessionBlock += "Plugins.MSSQL.Sessions.$sessionName.TrustServerCertificate=true`r`n`r`n"
     }
-    $mssqlPath = "$ZABBIX_CONF_D\mssql.conf"
-    Set-Content -Path $mssqlPath -Value $mssqlConf -Encoding UTF8
-    Set-RestrictedAcl -Path $mssqlPath
-    Write-Log "  SQL Server config written — UPDATE CREDENTIALS in $mssqlPath"
+    $sessionBlock += "# --- End MSSQL Session Config ---"
+
+    if (Test-Path $mssqlPluginConf) {
+        # Remove any previous session config we appended (between our markers)
+        $content = Get-Content $mssqlPluginConf -Raw
+        $content = $content -replace '(?s)# --- Zabbix Agent Script: MSSQL Session Config ---.*?# --- End MSSQL Session Config ---\r?\n?', ''
+        Set-Content -Path $mssqlPluginConf -Value ($content.TrimEnd() + "`r`n" + $sessionBlock) -Encoding UTF8
+    } else {
+        # No package config found — write a standalone file
+        Set-Content -Path $mssqlPluginConf -Value $sessionBlock -Encoding UTF8
+    }
+    Set-RestrictedAcl -Path $mssqlPluginConf
+
+    if ($mssqlConfPwd -eq "CHANGE_ME") {
+        Write-Log "  MSSQL plugin config written with placeholder — UPDATE CREDENTIALS in $mssqlPluginConf"
+    } else {
+        Write-Log "  MSSQL plugin config written with live credentials"
+    }
+}
+
+# Disable loadable plugin configs in plugins.d whose binaries are not present.
+# This prevents the agent from crashing on startup (e.g. NVIDIA plugin on a server
+# without a GPU).
+$pluginsDPath = "$ZABBIX_CONF_D\plugins.d"
+if (Test-Path $pluginsDPath) {
+    Get-ChildItem -Path "$pluginsDPath\*.conf" -ErrorAction SilentlyContinue | ForEach-Object {
+        $pconf = $_
+        $lines = Get-Content $pconf.FullName
+        $modified = $false
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^Plugins\..+\.System\.Path=(.+)$') {
+                $pluginBin = $Matches[1].Trim()
+                if (-not [string]::IsNullOrEmpty($pluginBin) -and -not (Test-Path $pluginBin)) {
+                    $pluginName = $pconf.BaseName
+                    Write-Log "  Disabling $pluginName plugin — binary not found: $pluginBin"
+                    $lines[$i] = "#$($lines[$i])"
+                    $modified = $true
+                }
+            }
+        }
+        if ($modified) {
+            Set-Content -Path $pconf.FullName -Value $lines -Encoding UTF8
+        }
+    }
 }
 
 # MySQL / MariaDB
@@ -369,7 +490,11 @@ if ($Action -eq "Updated") {
 }
 
 $CredWarning = ""
-if ($DetectedServices.Count -gt 0) {
+$NeedsCredUpdate = $false
+Get-ChildItem -Path "$ZABBIX_CONF_D" -Filter "*.conf" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    if (Select-String -Path $_.FullName -Pattern "CHANGE_ME" -Quiet) { $NeedsCredUpdate = $true }
+}
+if ($NeedsCredUpdate) {
     $CredWarning = "`n⚠️ Action Required: Update DB credentials in $ZABBIX_CONF_D\"
 }
 

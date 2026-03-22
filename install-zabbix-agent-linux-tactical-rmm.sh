@@ -4,10 +4,13 @@
 # Supports: Debian 11/12, Ubuntu 20.04/22.04/24.04
 #
 # Script Arguments (set in TacticalRMM):
-#   $1 = {{site.ZabbixProxy}}      e.g. 10.10.1.5
-#   $2 = {{site.ZabbixServer}}     e.g. 10.10.0.10
-#   $3 = {{global.DiscordWebhook}} e.g. https://discord.com/api/webhooks/...
-#   $4 = {{global.ZabbixVersion}}  e.g. 7.4
+#   $1 = {{site.ZabbixProxy}}           e.g. 10.10.1.5
+#   $2 = {{site.ZabbixServer}}          e.g. 10.10.0.10
+#   $3 = {{global.DiscordWebhook}}      e.g. https://discord.com/api/webhooks/...
+#   $4 = {{global.ZabbixVersion}}       e.g. 7.4
+#   $5 = {{global.ZabbixMSSQLPassword}} Password for the 'zabbix' SQL login (optional)
+#   $6 = {{site.MSSQLSAPassword}}       SA password for SQL Server (optional, Linux only)
+#   $7 = "force"                         Force re-run even if already on target version (optional)
 # =============================================================================
 
 set -eo pipefail
@@ -18,6 +21,9 @@ ZABBIX_PROXY=$(echo "${1:-}"    | tr -d "'")
 ZABBIX_SERVER=$(echo "${2:-}"   | tr -d "'")
 DISCORD_WEBHOOK=$(echo "${3:-}" | tr -d "'")
 ZABBIX_VERSION=$(echo "${4:-}"  | tr -d "'")
+ZABBIX_MSSQL_PWD=$(echo "${5:-}" | tr -d "'")
+MSSQL_SA_PWD=$(echo "${6:-}"     | tr -d "'")
+FORCE_RUN=$(echo "${7:-}"        | tr -d "'" | tr '[:upper:]' '[:lower:]')
 AGENT_CONF="/etc/zabbix/zabbix_agent2.conf"
 AGENT_CONF_D="/etc/zabbix/zabbix_agent2.d"
 
@@ -124,18 +130,25 @@ if package_installed zabbix-agent2; then
     log "Installed version: $PREV_VERSION"
 
     if [[ "$PREV_VERSION" == ${ZABBIX_VERSION}* ]]; then
-        log "Already on version $ZABBIX_VERSION — nothing to do."
-        exit 0
+        if [[ "$FORCE_RUN" == "force" ]]; then
+            log "Already on version $ZABBIX_VERSION — force flag set, reconfiguring."
+            ACTION="Reconfigured"
+        else
+            log "Already on version $ZABBIX_VERSION — nothing to do."
+            exit 0
+        fi
+    else
+        ACTION="Updated"
+        log "Upgrade needed: $PREV_VERSION -> $ZABBIX_VERSION"
     fi
-
-    ACTION="Updated"
-    log "Upgrade needed: $PREV_VERSION -> $ZABBIX_VERSION"
 else
     ACTION="Installed"
     log "Agent not installed — performing fresh install."
 fi
 
-# --- Add Zabbix repository ---------------------------------------------------
+# --- Add Zabbix repository & install agent (skip on reconfigure) -------------
+if [[ "$ACTION" != "Reconfigured" ]]; then
+
 # Official format: zabbix-release_latest+ubuntu22.04_all.deb
 # Note: no version number in the filename, full OS version (e.g. 22.04 not 22)
 ZABBIX_RELEASE_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/${REPO_OS}/pool/main/z/zabbix-release/zabbix-release_latest+${REPO_OS}${OS_VERSION}_all.deb"
@@ -175,6 +188,8 @@ apt-get update -qq
 log "Installing zabbix-agent2..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zabbix-agent2 zabbix-agent2-plugin-*
 
+fi # end skip-on-reconfigure
+
 NEW_VERSION=$(dpkg -s zabbix-agent2 | grep '^Version:' | awk '{print $2}')
 log "Agent version now: $NEW_VERSION"
 
@@ -206,6 +221,7 @@ BufferSend=5
 BufferSize=200
 
 Include=${AGENT_CONF_D}/*.conf
+Include=${AGENT_CONF_D}/plugins.d/*.conf
 EOF
 
 # Set restrictive permissions on the main config
@@ -218,18 +234,105 @@ log "Scanning for monitorable services..."
 
 if service_active mssql-server || systemctl list-units --type=service 2>/dev/null | grep -q mssql; then
     log "  [FOUND] Microsoft SQL Server"; DETECTED_SERVICES+=("Microsoft SQL Server")
-    cat > "${AGENT_CONF_D}/mssql.conf" <<'EOF'
-# Microsoft SQL Server - Zabbix Agent 2 Plugin
-# CREATE LOGIN zabbix WITH PASSWORD = 'StrongPassword!';
-# GRANT VIEW SERVER STATE TO zabbix;
-# GRANT VIEW ANY DEFINITION TO zabbix;
 
+    # Install the MSSQL loadable plugin (separate package from zabbix-agent2)
+    if ! package_installed zabbix-agent2-plugin-mssql; then
+        log "  Installing zabbix-agent2-plugin-mssql..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zabbix-agent2-plugin-mssql
+    else
+        log "  zabbix-agent2-plugin-mssql already installed"
+    fi
+
+    # Create/update the zabbix SQL login automatically
+    if [[ -n "$ZABBIX_MSSQL_PWD" && -n "$MSSQL_SA_PWD" ]]; then
+        SQLCMD=""
+        for p in /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd; do
+            [[ -x "$p" ]] && SQLCMD="$p" && break
+        done
+
+        if [[ -n "$SQLCMD" ]]; then
+            ESCAPED_PWD="${ZABBIX_MSSQL_PWD//\'/\'\'}"
+            log "  Creating/updating zabbix SQL login..."
+            if "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PWD" -C -b -Q "
+                IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'zabbix')
+                    CREATE LOGIN [zabbix] WITH PASSWORD = N'${ESCAPED_PWD}', CHECK_POLICY = OFF;
+                ELSE
+                    ALTER LOGIN [zabbix] WITH PASSWORD = N'${ESCAPED_PWD}';
+                GRANT VIEW SERVER STATE TO [zabbix];
+                GRANT VIEW ANY DEFINITION TO [zabbix];
+            " 2>&1 | while read -r line; do log "    $line"; done; then
+                log "  zabbix SQL login ready (server level)"
+            else
+                warn "  Failed to create zabbix SQL login — check SA password and SQL Server status"
+            fi
+
+            # Grant msdb permissions for SQL Agent job monitoring
+            log "  Granting msdb permissions for SQL Agent job monitoring..."
+            if "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PWD" -C -b -Q "
+                USE [msdb];
+                IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'zabbix')
+                    CREATE USER [zabbix] FOR LOGIN [zabbix];
+                GRANT EXECUTE ON msdb.dbo.agent_datetime TO [zabbix];
+                GRANT SELECT ON msdb.dbo.sysjobactivity TO [zabbix];
+                GRANT SELECT ON msdb.dbo.sysjobservers TO [zabbix];
+                GRANT SELECT ON msdb.dbo.sysjobs TO [zabbix];
+            " 2>&1 | while read -r line; do log "    $line"; done; then
+                log "  msdb permissions granted"
+            else
+                warn "  Failed to grant msdb permissions — SQL Agent monitoring may not work"
+            fi
+        else
+            warn "  sqlcmd not found — cannot create zabbix SQL login automatically"
+        fi
+        MSSQL_CONF_PWD="$ZABBIX_MSSQL_PWD"
+    else
+        MSSQL_CONF_PWD="CHANGE_ME"
+        [[ -z "$ZABBIX_MSSQL_PWD" ]] && warn "  ZabbixMSSQLPassword not set — writing placeholder credentials"
+        [[ -z "$MSSQL_SA_PWD" ]]     && warn "  MSSQLSAPassword not set — cannot create SQL login automatically"
+    fi
+
+    # Write session credentials into the package-installed plugins.d/mssql.conf
+    # The package config already has the correct System.Path to the plugin binary.
+    # We append session config rather than overwriting to preserve the System.Path line.
+    PLUGINS_D="${AGENT_CONF_D}/plugins.d"
+    MSSQL_PLUGIN_CONF="${PLUGINS_D}/mssql.conf"
+    if [[ -f "$MSSQL_PLUGIN_CONF" ]]; then
+        # Remove any previous session config we appended (between our markers)
+        sed -i '/^# --- Zabbix Agent Script: MSSQL Session Config ---$/,/^# --- End MSSQL Session Config ---$/d' "$MSSQL_PLUGIN_CONF"
+    fi
+    cat >> "$MSSQL_PLUGIN_CONF" <<EOF
+# --- Zabbix Agent Script: MSSQL Session Config ---
 Plugins.MSSQL.Sessions.local.Uri=sqlserver://localhost:1433
 Plugins.MSSQL.Sessions.local.User=zabbix
-Plugins.MSSQL.Sessions.local.Password=CHANGE_ME
-Plugins.MSSQL.Sessions.local.TLSConnect=disable
+Plugins.MSSQL.Sessions.local.Password=${MSSQL_CONF_PWD}
+Plugins.MSSQL.Sessions.local.Encrypt=disable
+Plugins.MSSQL.Sessions.local.TrustServerCertificate=true
+# --- End MSSQL Session Config ---
 EOF
-    warn "  SQL Server config written — update credentials in ${AGENT_CONF_D}/mssql.conf"
+    if [[ "$MSSQL_CONF_PWD" == "CHANGE_ME" ]]; then
+        warn "  MSSQL plugin config written with placeholder — update credentials in ${MSSQL_PLUGIN_CONF}"
+    else
+        log "  MSSQL plugin config written with live credentials"
+    fi
+fi
+
+# Disable loadable plugin configs in plugins.d whose binaries are not present.
+# This prevents the agent from crashing on startup (e.g. NVIDIA plugin on a server
+# without a GPU).
+if [[ -d "${AGENT_CONF_D}/plugins.d" ]]; then
+    for pconf in "${AGENT_CONF_D}/plugins.d"/*.conf; do
+        [[ -f "$pconf" ]] || continue
+        # Extract any System.Path= lines that are not commented out
+        while IFS= read -r syspath_line; do
+            plugin_bin="${syspath_line#*=}"
+            plugin_bin=$(echo "$plugin_bin" | xargs)  # trim whitespace
+            if [[ -n "$plugin_bin" && ! -x "$plugin_bin" ]]; then
+                plugin_name=$(basename "$pconf" .conf)
+                log "  Disabling ${plugin_name} plugin — binary not found: ${plugin_bin}"
+                sed -i "s|^Plugins\..*\.System\.Path=|#&|" "$pconf"
+            fi
+        done < <(grep -E '^Plugins\.[^#]*\.System\.Path=' "$pconf" 2>/dev/null)
+    done
 fi
 
 if service_active mysql || service_active mariadb; then
@@ -299,6 +402,10 @@ fi
 chown -R root:zabbix "$AGENT_CONF_D" 2>/dev/null || true
 chmod 750 "$AGENT_CONF_D"
 chmod 640 "${AGENT_CONF_D}"/*.conf 2>/dev/null || true
+if [[ -d "${AGENT_CONF_D}/plugins.d" ]]; then
+    chmod 750 "${AGENT_CONF_D}/plugins.d"
+    chmod 640 "${AGENT_CONF_D}/plugins.d"/*.conf 2>/dev/null || true
+fi
 
 # --- Firewall ----------------------------------------------------------------
 log "Configuring firewall for Zabbix agent (port 10050/tcp)..."
@@ -340,7 +447,12 @@ else
 fi
 
 CRED_WARNING=""
-[[ ${#DETECTED_SERVICES[@]} -gt 0 ]] && \
+NEEDS_CRED_UPDATE=false
+# Check if any DB plugin still has placeholder credentials
+for conf_file in "${AGENT_CONF_D}"/*.conf; do
+    [[ -f "$conf_file" ]] && grep -q "CHANGE_ME" "$conf_file" 2>/dev/null && NEEDS_CRED_UPDATE=true && break
+done
+[[ "$NEEDS_CRED_UPDATE" == "true" ]] && \
     CRED_WARNING="\n⚠️ Action Required: Update DB credentials in ${AGENT_CONF_D}/"
 
 send_discord "✅ Zabbix Agent ${ACTION}" \
