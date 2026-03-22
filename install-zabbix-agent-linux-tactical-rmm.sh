@@ -418,8 +418,29 @@ elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewall
         && firewall-cmd --reload >/dev/null 2>&1 \
         && log "firewalld: allowed 10050/tcp" \
         || warn "firewalld: failed to add rule for 10050/tcp"
+elif command -v iptables &>/dev/null; then
+    # Check if the rule already exists before adding
+    if ! iptables -C INPUT -p tcp --dport 10050 -j ACCEPT 2>/dev/null; then
+        iptables -A INPUT -p tcp --dport 10050 -m comment --comment "Zabbix Agent 2" -j ACCEPT \
+            && log "iptables: allowed 10050/tcp" \
+            || warn "iptables: failed to add rule for 10050/tcp"
+        # Persist the rule if iptables-persistent is installed
+        if command -v netfilter-persistent &>/dev/null; then
+            netfilter-persistent save >/dev/null 2>&1 \
+                && log "iptables: rules saved via netfilter-persistent" \
+                || warn "iptables: failed to save rules"
+        elif [[ -d /etc/iptables ]]; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null \
+                && log "iptables: rules saved to /etc/iptables/rules.v4" \
+                || warn "iptables: failed to save rules"
+        else
+            warn "iptables: rule added but no persistence mechanism found — rule will be lost on reboot"
+        fi
+    else
+        log "iptables: rule for 10050/tcp already exists — skipping"
+    fi
 else
-    log "No active firewall detected (ufw/firewalld) — ensure port 10050/tcp is open if a firewall is in use."
+    log "No active firewall detected (ufw/firewalld/iptables) — ensure port 10050/tcp is open if a firewall is in use."
 fi
 
 # --- Enable & restart agent --------------------------------------------------
