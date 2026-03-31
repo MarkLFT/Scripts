@@ -293,6 +293,32 @@ sudo find /sqlbackup -name "*.bak" -o -name "*.trn" | head -20
 mountpoint -q /mnt/sqlbackups_remote && echo "Mounted" || echo "Not mounted"
 ```
 
+### Migrate UFW to iptables (Existing SQL Server Hosts)
+
+For servers already running SQL Server that were set up with UFW and need to switch to iptables.
+UFW can be unstable on servers with complex NAT rules (such as the MSDTC port 135 PREROUTING redirect),
+and iptables-persistent provides more predictable behaviour across reboots.
+
+This script:
+
+- Snapshots all current UFW rules and live iptables state to `/root/firewall-migration-<timestamp>/` before making any changes
+- Parses open UFW ports and preserves them in the new iptables ruleset (so no ports are accidentally lost)
+- Builds a clean iptables ruleset with INPUT DROP policy, allowing SSH, SQL Server (1433), and MSDTC ports
+- Reads MSDTC port configuration from `/var/opt/mssql/mssql.conf` automatically (defaults to 13500/51999)
+- Adds NAT PREROUTING and OUTPUT rules to redirect port 135 to the MSDTC RPC port
+- Persists all rules via iptables-persistent and enables netfilter-persistent on boot
+- Removes UFW completely
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/migrate-ufw-to-iptables.sh -o /tmp/migrate-ufw-to-iptables.sh && sudo bash /tmp/migrate-ufw-to-iptables.sh
+```
+
+To roll back if something goes wrong:
+
+```bash
+sudo iptables-restore < /root/firewall-migration-*/iptables-v4-before.rules
+```
+
 #### Hotfix script
 
 For servers already deployed, a hotfix script applies all fixes without rebuilding:
