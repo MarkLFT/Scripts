@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
 # migrate-ufw-to-iptables.sh
-# Ubuntu — Migrate running SQL Server host from UFW to iptables
+# Ubuntu — Migrate running SQL Server host from UFW to iptables-legacy
 #
 # Tasks:
 #  1. Detect current MSDTC port configuration from mssql-conf
 #  2. Snapshot current UFW rules and live iptables state for reference
-#  3. Install iptables-persistent
-#  4. Disable and purge UFW
-#  5. Build a clean iptables ruleset (preserving all ports UFW had open)
-#  6. Add MSDTC rules (INPUT + NAT PREROUTING/OUTPUT for port 135 redirect)
-#  7. Persist and enable on boot
+#  3. Switch from iptables-nft to iptables-legacy (required for MSDTC)
+#  4. Flush nftables ruleset and disable nftables
+#  5. Disable and purge UFW
+#  6. Install iptables-persistent
+#  7. Build a clean iptables ruleset (preserving all ports UFW had open)
+#  8. Add MSDTC rules (INPUT + NAT PREROUTING/OUTPUT for port 135 redirect)
+#  9. Persist and enable on boot
+#
+# Why iptables-legacy: Microsoft's MSDTC on Linux requires classic iptables.
+# The nf_tables backend (iptables-nft / nft) that ships as default on Ubuntu
+# 22.04+ is not supported by MSDTC. This script switches the system to
+# iptables-legacy so all tables (filter, nat, mangle) work correctly.
 #
 # Requirements: Run as root or via sudo on a server already running SQL Server.
 # =============================================================================
@@ -82,8 +89,8 @@ ufw status numbered > "$SNAPSHOT_DIR/ufw-status-numbered.txt" 2>&1 || true
 
 # Capture live iptables rules (these include UFW-generated chains)
 info "Capturing live iptables rules..."
-iptables-save  > "$SNAPSHOT_DIR/iptables-v4-before.rules"
-ip6tables-save > "$SNAPSHOT_DIR/iptables-v6-before.rules"
+iptables-save  > "$SNAPSHOT_DIR/iptables-v4-before.rules" 2>/dev/null || true
+ip6tables-save > "$SNAPSHOT_DIR/iptables-v6-before.rules" 2>/dev/null || true
 iptables -L -n --line-numbers > "$SNAPSHOT_DIR/iptables-v4-list.txt" 2>&1 || true
 iptables -t nat -L -n --line-numbers > "$SNAPSHOT_DIR/iptables-nat-list.txt" 2>&1 || true
 
@@ -130,17 +137,39 @@ if [[ ${#UFW_UDP_PORTS[@]} -gt 0 ]]; then
 fi
 
 # =============================================================================
-# STEP 3 — Install iptables-persistent
+# STEP 3 — Switch to iptables-legacy
 # =============================================================================
 echo ""
-echo -e "${CYN}━━ Step 3: Installing iptables-persistent ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYN}━━ Step 3: Switching to iptables-legacy ━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-info "Installing iptables-persistent (netfilter-persistent)..."
-echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
-echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
-DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
+info "Current iptables backend:"
+iptables --version 2>/dev/null || true
 
-success "iptables-persistent installed."
+# Flush the entire nftables ruleset first so the legacy module can load cleanly
+if command -v nft &>/dev/null; then
+    info "Flushing nftables ruleset..."
+    nft flush ruleset 2>/dev/null || true
+fi
+
+# Switch update-alternatives to iptables-legacy
+info "Setting iptables alternative to iptables-legacy..."
+update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || \
+    warn "iptables-legacy alternative not available — may already be legacy."
+update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || \
+    warn "ip6tables-legacy alternative not available — may already be legacy."
+
+# Disable and stop nftables service if it exists
+if systemctl list-unit-files nftables.service &>/dev/null; then
+    info "Disabling nftables service..."
+    systemctl stop nftables.service 2>/dev/null || true
+    systemctl disable nftables.service 2>/dev/null || true
+    systemctl mask nftables.service 2>/dev/null || true
+fi
+
+info "Verified iptables backend:"
+iptables --version
+
+success "Switched to iptables-legacy."
 
 # =============================================================================
 # STEP 4 — Disable and purge UFW
@@ -158,19 +187,32 @@ apt-get autoremove -y 2>/dev/null || true
 success "UFW disabled and purged."
 
 # =============================================================================
-# STEP 5 — Build clean iptables ruleset
+# STEP 5 — Install iptables-persistent
 # =============================================================================
 echo ""
-echo -e "${CYN}━━ Step 5: Building clean iptables ruleset ━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYN}━━ Step 5: Installing iptables-persistent ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# Flush everything (UFW chains and all)
+info "Installing iptables-persistent (netfilter-persistent)..."
+echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
+echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
+DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
+
+success "iptables-persistent installed."
+
+# =============================================================================
+# STEP 6 — Build clean iptables ruleset
+# =============================================================================
+echo ""
+echo -e "${CYN}━━ Step 6: Building clean iptables ruleset ━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Flush everything
 info "Flushing all iptables rules and chains..."
-iptables -F || true
-iptables -X || true
-iptables -t nat -F || true
-iptables -t nat -X || true
-iptables -t mangle -F || true
-iptables -t mangle -X || true
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
 
 # Set default policies — DROP inbound, ACCEPT outbound, DROP forward
 info "Setting default policies: INPUT=DROP, FORWARD=DROP, OUTPUT=ACCEPT..."
@@ -223,10 +265,10 @@ done
 success "Filter rules applied."
 
 # =============================================================================
-# STEP 6 — MSDTC NAT / port forwarding rules
+# STEP 7 — MSDTC NAT / port forwarding rules
 # =============================================================================
 echo ""
-echo -e "${CYN}━━ Step 6: Adding MSDTC NAT forwarding rules ━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYN}━━ Step 7: Adding MSDTC NAT forwarding rules ━━━━━━━━━━━━━━━━━━━${NC}"
 
 # Enable IP forwarding (required for PREROUTING NAT)
 info "Enabling IP forwarding..."
@@ -259,10 +301,10 @@ iptables -t nat -A OUTPUT -d 127.0.0.1 -p tcp --dport 135 \
 success "MSDTC NAT forwarding rules applied."
 
 # =============================================================================
-# STEP 7 — Persist and verify
+# STEP 8 — Persist and verify
 # =============================================================================
 echo ""
-echo -e "${CYN}━━ Step 7: Persisting iptables rules ━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYN}━━ Step 8: Persisting iptables rules ━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 mkdir -p /etc/iptables
 
@@ -294,7 +336,7 @@ iptables-save > "$SNAPSHOT_DIR/iptables-v4-after.rules"
 # =============================================================================
 echo ""
 echo -e "${GRN}══════════════════════════════════════════════════════════════════${NC}"
-echo -e "${GRN}  Migration complete — UFW removed, iptables active${NC}"
+echo -e "${GRN}  Migration complete — UFW removed, iptables-legacy active${NC}"
 echo -e "${GRN}══════════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  MSDTC RPC port       : ${MSDTC_RPC_PORT}"
