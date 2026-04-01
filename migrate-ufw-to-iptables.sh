@@ -230,6 +230,13 @@ iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
 info "Allowing SSH (port 22)..."
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 
+# ── SMB / Samba ─────────────────────────────────────────────────────────────
+info "Allowing SMB (TCP 445, TCP 139, UDP 137-138)..."
+iptables -A INPUT -p tcp --dport 445 -j ACCEPT
+iptables -A INPUT -p tcp --dport 139 -j ACCEPT
+iptables -A INPUT -p udp --dport 137 -j ACCEPT
+iptables -A INPUT -p udp --dport 138 -j ACCEPT
+
 # ── SQL Server TDS ───────────────────────────────────────────────────────────
 info "Allowing SQL Server TDS (port 1433)..."
 iptables -A INPUT -p tcp --dport 1433 -j ACCEPT
@@ -246,7 +253,7 @@ iptables -A INPUT -p tcp --dport 135 -j ACCEPT
 
 # ── Additional ports from UFW ────────────────────────────────────────────────
 # Add any TCP ports that were in UFW but not already covered above
-STANDARD_TCP_PORTS="22 135 1433 ${MSDTC_RPC_PORT} ${MSDTC_DTC_PORT}"
+STANDARD_TCP_PORTS="22 135 139 445 1433 ${MSDTC_RPC_PORT} ${MSDTC_DTC_PORT}"
 for port in "${UFW_PORTS[@]:-}"; do
     [[ -z "$port" ]] && continue
     if [[ ! " $STANDARD_TCP_PORTS " =~ " $port " ]]; then
