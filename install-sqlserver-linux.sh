@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# setup-sqlserver-ubuntu.sh
-# Ubuntu 24.04 LTS - SQL Server 2025 Full Setup Script
+# install-sqlserver-linux.sh
+# Ubuntu 24.04 LTS - SQL Server 2025 Setup Script
 #
 # Tasks:
 #  0. Rename computer / configure domain name (rmserver.local)
@@ -12,8 +12,16 @@
 #  4. Add MSDTC iptables rules (PREROUTING NAT + INPUT filter)
 #  5. Persist all iptables rules via iptables-persistent
 #  6. Uninstall UFW
-#  7. Create backup folder, backup all user databases to per-DB folders,
-#     copy backups to a remote SMB share, and schedule auto-cleanup
+#  7. (Backup automation handled separately — see sql-server-linux-backups repo)
+#  8. OS kernel tuning (TuneD mssql profile)
+#  9. NTP / chrony
+# 10. Unattended security updates
+# 11. SSH hardening
+# 12. fail2ban
+#
+# Backup setup (Ola Hallengren, Database Mail alerts, cron scheduling):
+#   https://github.com/MarkLFT/sql-server-linux-backups
+#   Run that installer after this script completes and the server is rebooted.
 #
 # Requirements: Run as root or via sudo. Tested on Ubuntu 24.04 LTS.
 # =============================================================================
@@ -240,77 +248,8 @@ else
 fi
 echo ""
 
-# ── 7: Backup / SMB ───────────────────────────────────────────────────────────
-echo -e "${CYN}── Section 7: Backup & Remote SMB Share ──────────────────────────${NC}"
-echo ""
-echo "  Local backup root (databases are backed up to sub-folders here)."
-while true; do
-    ask LOCAL_BACKUP_ROOT "$SQL_BACKUP_DIR already entered above — use same path?" "$SQL_BACKUP_DIR"
-    validate_path "$LOCAL_BACKUP_ROOT" && break
-    warn "Path must be absolute."
-done
-
-echo ""
-echo "  Remote SMB share to copy backups to."
-echo "  Format: //server/share  or  //192.168.1.x/share"
-while true; do
-    ask SMB_SHARE "SMB share path (e.g. //192.168.1.50/sqlbackups)" ""
-    [[ "$SMB_SHARE" =~ ^//[^/].* ]] && break
-    warn "Share must start with // e.g. //server/share"
-done
-ask SMB_USER   "SMB username"   ""
-ask_secret SMB_PASS "SMB password"
-ask SMB_MOUNT  "Local SMB mount point" "/mnt/sqlbackups_remote"
-
-echo ""
-echo "  Backup retention (days to keep backups locally and on SMB share)."
-while true; do
-    ask BACKUP_RETENTION "Retention in days" "30"
-    [[ "$BACKUP_RETENTION" =~ ^[0-9]+$ && "$BACKUP_RETENTION" -gt 0 ]] && break
-    warn "Must be a positive integer."
-done
-
-echo ""
-echo "  TDE certificate export."
-echo "  Your databases use Transparent Data Encryption (TDE). Their backup"
-echo "  files are already encrypted implicitly — no separate backup password"
-echo "  is needed. However, the TDE certificate MUST be exported and stored"
-echo "  safely. Without it, backups cannot be restored on any other server."
-echo ""
-echo "  The certificate files will be stored SEPARATELY from the backup tree:"
-echo "    - Locally  : /etc/mssql-tde-certs/  (root:root 700, files 400)"
-echo "    - Remotely : a SEPARATE SMB share you specify below (not the"
-echo "                 backup share — certificates and backups must not"
-echo "                 be stored together)"
-echo ""
-echo "  You must supply the password that will protect the exported private"
-echo "  key file. Store this password in a password manager or physical safe."
-echo ""
-echo "  Password rules: ≥8 characters, 3 of 4: UPPER, lower, digit, special."
-while true; do
-    ask_secret TDE_CERT_EXPORT_PASSWORD "TDE certificate export password"
-    validate_sa_password "$TDE_CERT_EXPORT_PASSWORD" && break
-    warn "Password does not meet complexity requirements. Try again."
-done
-
-echo ""
-echo "  Separate SMB share for TDE certificate storage."
-echo "  This MUST be a different share from the backup share above."
-echo "  It should be on a different server, accessible only to DBAs."
-while true; do
-    ask TDE_CERT_SMB_SHARE "SMB share for certificates (e.g. //192.168.1.51/sqlcerts)" ""
-    [[ "$TDE_CERT_SMB_SHARE" =~ ^//[^/].* ]] || { warn "Share must start with //"; continue; }
-    [[ "$TDE_CERT_SMB_SHARE" != "$SMB_SHARE" ]] || { warn "Certificate share must be DIFFERENT from the backup share."; continue; }
-    break
-done
-ask TDE_CERT_SMB_USER  "Certificate share SMB username" ""
-ask_secret TDE_CERT_SMB_PASS "Certificate share SMB password"
-ask TDE_CERT_SMB_MOUNT "Local mount point for certificate share" "/mnt/sqlcerts_remote"
-
-echo ""
-
 # ── NTP / time synchronisation ────────────────────────────────────────────────
-echo -e "${CYN}── Section 8: NTP / Time Synchronisation ─────────────────────────${NC}"
+echo -e "${CYN}── Section 7: NTP / Time Synchronisation ─────────────────────────${NC}"
 echo ""
 echo "  Accurate time is required for MSDTC, TDE, Kerberos, and log correlation."
 echo "  chrony will be installed and configured. If you have an internal NTP"
@@ -321,7 +260,7 @@ ask NTP_SERVER "NTP server (hostname/IP, or press Enter for pool.ntp.org)" "pool
 echo ""
 
 # ── SSH hardening ─────────────────────────────────────────────────────────────
-echo -e "${CYN}── Section 9: SSH Hardening ──────────────────────────────────────${NC}"
+echo -e "${CYN}── Section 8: SSH Hardening ──────────────────────────────────────${NC}"
 echo ""
 echo "  Root SSH login and password authentication will be disabled."
 echo "  Ensure you have an SSH key deployed for your admin user BEFORE"
@@ -341,7 +280,7 @@ fi
 echo ""
 
 # ── fail2ban ──────────────────────────────────────────────────────────────────
-echo -e "${CYN}── Section 10: fail2ban ──────────────────────────────────────────${NC}"
+echo -e "${CYN}── Section 9: fail2ban ───────────────────────────────────────────${NC}"
 echo ""
 echo "  fail2ban monitors /var/log/auth.log and automatically bans IPs"
 echo "  after repeated failed SSH login attempts using iptables rules."
@@ -364,13 +303,6 @@ echo "  Log dir       : ${SQL_LOG_DIR}"
 echo "  Backup dir    : ${SQL_BACKUP_DIR}"
 echo "  MSDTC RPC     : ${MSDTC_RPC_PORT}"
 echo "  MSDTC DTC     : ${MSDTC_DTC_PORT}"
-echo "  Local backup  : ${LOCAL_BACKUP_ROOT}"
-echo "  SMB share     : ${SMB_SHARE}"
-echo "  SMB user      : ${SMB_USER}"
-echo "  SMB mount     : ${SMB_MOUNT}"
-echo "  Retention     : ${BACKUP_RETENTION} days"
-echo "  Backup encrypt: TDE (implicit — databases encrypted at rest)"
-echo "  TDE cert share: ${TDE_CERT_SMB_SHARE} (separate from backup share)"
 echo "  SQL mem limit : ${SQL_MEM_LIMIT_MB} MB"
 echo "  NTP server    : ${NTP_SERVER}"
 echo "  SSH harden    : ${SSH_HARDEN}"
@@ -744,506 +676,36 @@ echo -e "${YEL}    iptables -A INPUT -p tcp --dport <PORT> -j ACCEPT${NC}"
 echo -e "${YEL}    iptables-save > /etc/iptables/rules.v4${NC}"
 
 # =============================================================================
-# SECTION 7 — Backup setup using Ola Hallengren's SQL Server Maintenance Solution
+# SECTION 7 — Backup setup
 #
-# GitHub: https://github.com/olahallengren/sql-server-maintenance-solution
-# 3,300+ stars — the industry-standard open source SQL Server backup/maintenance
-# library. Supports SQL Server 2008 through 2025. MIT licensed.
+# Backup automation is handled by a dedicated installer:
+#   https://github.com/MarkLFT/sql-server-linux-backups
 #
-# DatabaseBackup procedure features used here:
-#   @Databases       = 'USER_DATABASES'  — all user databases automatically
-#   @Directory                           — per-DB subfolders created automatically
-#   @BackupType      = 'FULL'
-#   @Compress        = 'Y'
-#   @Verify          = 'Y'               — RESTORE VERIFYONLY after each backup
-#   @CheckSum        = 'Y'               — page-level checksum validation
-#   @CleanupTime                         — auto-delete old backups (hours)
-#   @LogToTable      = 'Y'              — logs every command to dbo.CommandLog
+# That installer handles:
+#   - Ola Hallengren Maintenance Solution (DatabaseBackup, CHECKDB)
+#   - Dedicated backup_admin SQL login
+#   - Database Mail for failure email alerts (SMTP)
+#   - Backup scripts with error notification
+#   - Cron job scheduling (full, log, CHECKDB)
+#   - TDE certificate management
+#
+# Run it after this script completes:
+#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/main/install.sh -o /tmp/install-backups.sh
+#   chmod +x /tmp/install-backups.sh && sudo /tmp/install-backups.sh
 # =============================================================================
 echo ""
-echo -e "${CYN}━━ Step 7: Configuring Backup (Ola Hallengren Maintenance Solution) ━${NC}"
-echo -e "${CYN}   https://github.com/olahallengren/sql-server-maintenance-solution  ${NC}"
-
-# ── 7a: Local backup directory ────────────────────────────────────────────────
-info "Creating local backup root: ${LOCAL_BACKUP_ROOT}..."
-mkdir -p "${LOCAL_BACKUP_ROOT}"
-chown mssql:mssql "${LOCAL_BACKUP_ROOT}"
-chmod 750 "${LOCAL_BACKUP_ROOT}"
-
-# ── 7b: SMB mount ─────────────────────────────────────────────────────────────
-info "Configuring SMB share ${SMB_SHARE} → ${SMB_MOUNT}..."
-mkdir -p "${SMB_MOUNT}"
-
-# Store SMB credentials securely
-SMB_CRED_FILE="/root/.smb_sqlbackup_credentials"
-cat > "${SMB_CRED_FILE}" <<EOF
-username=${SMB_USER}
-password=${SMB_PASS}
-EOF
-chmod 600 "${SMB_CRED_FILE}"
-
-# Mount now (non-fatal — fstab entry ensures persistence after reboot)
-mount -t cifs "${SMB_SHARE}" "${SMB_MOUNT}" \
-    -o "credentials=${SMB_CRED_FILE},vers=3.0,file_mode=0770,dir_mode=0770" \
-    || warn "SMB mount failed. Verify share path/credentials. fstab entry will be added regardless."
-
-# Persist SMB mount in /etc/fstab
-if ! grep -qF "${SMB_SHARE}" /etc/fstab 2>/dev/null; then
-    echo "${SMB_SHARE}  ${SMB_MOUNT}  cifs  credentials=${SMB_CRED_FILE},vers=3.0,file_mode=0770,dir_mode=0770,_netdev  0  0" \
-        >> /etc/fstab
-    info "Added SMB mount to /etc/fstab."
-fi
-
-# ── 7c: Download and install Ola Hallengren's Maintenance Solution ────────────
-OLA_URL="https://raw.githubusercontent.com/olahallengren/sql-server-maintenance-solution/main/MaintenanceSolution.sql"
-OLA_SQL="/tmp/MaintenanceSolution.sql"
-
-info "Downloading Ola Hallengren's MaintenanceSolution.sql from GitHub..."
-if ! curl -fsSL "${OLA_URL}" -o "${OLA_SQL}"; then
-    die "Failed to download MaintenanceSolution.sql. Check internet connectivity."
-fi
-
-# Patch the script's @BackupDirectory to use our configured backup path.
-# The script contains: DECLARE @BackupDirectory nvarchar(max) = NULL
-# We replace NULL with our path so jobs are pre-configured.
-ESCAPED_BACKUP_DIR=$(printf '%s\n' "${LOCAL_BACKUP_ROOT}" | sed 's/[[\.*^$()+?{|&]/\\&/g')
-sed -i "s|DECLARE @BackupDirectory nvarchar(max)\s*=\s*NULL|DECLARE @BackupDirectory nvarchar(max) = N'${ESCAPED_BACKUP_DIR}'|g" \
-    "${OLA_SQL}" || true
-
-info "Installing Ola Hallengren's stored procedures into master database..."
-# -b causes sqlcmd to exit with error code on SQL errors
-"${TOOLS_PATH}/sqlcmd" \
-    -S localhost \
-    -U sa \
-    -P "${SA_PASSWORD}" \
-    -C \
-    -d master \
-    -b \
-    -i "${OLA_SQL}" \
-    -o /var/log/ola_install.log \
-    && success "Ola Hallengren's solution installed successfully." \
-    || die "Installation of Ola Hallengren's solution failed. See /var/log/ola_install.log"
-
-rm -f "${OLA_SQL}"
-
-# ── 7d: Verify the stored procedures were created ────────────────────────────
-info "Verifying stored procedures..."
-OLA_CHECK=$("${TOOLS_PATH}/sqlcmd" -S localhost -U sa -P "${SA_PASSWORD}" -C -d master \
-    -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.objects WHERE type='P' AND name IN ('DatabaseBackup','DatabaseIntegrityCheck','IndexOptimize','CommandExecute');" \
-    -h -1 2>/dev/null | tr -d ' \r\n')
-
-if [[ "$OLA_CHECK" == "4" ]]; then
-    success "All 4 Ola Hallengren stored procedures confirmed in master."
-else
-    warn "Expected 4 procedures, found: ${OLA_CHECK}. Check /var/log/ola_install.log"
-fi
-
-# ── 7e: Export the TDE certificate to a secure, isolated location ────────────
-#
-# Security model:
-#   - Certificate files are stored in /etc/mssql-tde-certs/
-#     owner: root:root, directory: 700, files: 400
-#     The mssql service account has NO access to this path.
-#   - This directory is completely outside the backup tree so mssql
-#     can never traverse to it, even if SQL Server is compromised.
-#   - Certificates are copied to a SEPARATE SMB share (not the backup share)
-#     so that an attacker who obtains the backup media does not automatically
-#     have the key needed to decrypt it.
-#
-# Reference:
-#   https://learn.microsoft.com/en-us/sql/relational-databases/backup-restore/backup-encryption
-
-TDE_CERT_EXPORT_DIR="/etc/mssql-tde-certs"
-
-info "Creating TDE certificate export directory: ${TDE_CERT_EXPORT_DIR}..."
-mkdir -p "${TDE_CERT_EXPORT_DIR}"
-chown root:root "${TDE_CERT_EXPORT_DIR}"
-chmod 700 "${TDE_CERT_EXPORT_DIR}"   # root-only; mssql service account has no access
-
-# Mount the separate certificate SMB share
-TDE_CERT_SMB_CRED_FILE="/root/.smb_tdecert_credentials"
-cat > "${TDE_CERT_SMB_CRED_FILE}" <<EOF
-username=${TDE_CERT_SMB_USER}
-password=${TDE_CERT_SMB_PASS}
-EOF
-chmod 600 "${TDE_CERT_SMB_CRED_FILE}"
-
-info "Mounting certificate SMB share ${TDE_CERT_SMB_SHARE} → ${TDE_CERT_SMB_MOUNT}..."
-mkdir -p "${TDE_CERT_SMB_MOUNT}"
-mount -t cifs "${TDE_CERT_SMB_SHARE}" "${TDE_CERT_SMB_MOUNT}" \
-    -o "credentials=${TDE_CERT_SMB_CRED_FILE},vers=3.0,file_mode=0600,dir_mode=0700" \
-    || warn "Certificate SMB mount failed. fstab entry will be added; verify credentials."
-
-# Persist certificate SMB mount in /etc/fstab
-if ! grep -qF "${TDE_CERT_SMB_SHARE}" /etc/fstab 2>/dev/null; then
-    echo "${TDE_CERT_SMB_SHARE}  ${TDE_CERT_SMB_MOUNT}  cifs  credentials=${TDE_CERT_SMB_CRED_FILE},vers=3.0,file_mode=0600,dir_mode=0700,_netdev  0  0" \
-        >> /etc/fstab
-    info "Added certificate SMB mount to /etc/fstab."
-fi
-
-info "Discovering TDE certificates protecting user databases..."
-
-# Query: find every certificate whose thumbprint matches a DEK in a user database
-TDE_CERTS=$("${TOOLS_PATH}/sqlcmd" \
-    -S localhost -U sa -P "${SA_PASSWORD}" -C -d master \
-    -Q "SET NOCOUNT ON;
-        SELECT DISTINCT c.name
-        FROM   sys.certificates c
-        JOIN   sys.dm_database_encryption_keys dek
-               ON dek.encryptor_thumbprint = c.thumbprint
-        WHERE  dek.database_id > 4;" \
-    -h -1 2>/dev/null | sed '/^$/d' | sed '/^-/d' | xargs)
-
-if [[ -z "$TDE_CERTS" ]]; then
-    warn "No TDE certificates found protecting user databases."
-    warn "Verify TDE is configured: SELECT name, is_encrypted FROM sys.databases WHERE database_id > 4"
-else
-    for CERT in $TDE_CERTS; do
-        CERT=$(echo "$CERT" | xargs)
-        [[ -z "$CERT" ]] && continue
-
-        CERT_FILE="${TDE_CERT_EXPORT_DIR}/${CERT}.cer"
-        CERT_KEY_FILE="${TDE_CERT_EXPORT_DIR}/${CERT}.pvk"
-
-        info "Exporting TDE certificate: ${CERT}..."
-        "${TOOLS_PATH}/sqlcmd" \
-            -S localhost -U sa -P "${SA_PASSWORD}" -C -d master -b \
-            -Q "BACKUP CERTIFICATE [${CERT}]
-                TO FILE = '${CERT_FILE}'
-                WITH PRIVATE KEY (
-                    FILE                   = '${CERT_KEY_FILE}',
-                    ENCRYPTION BY PASSWORD = '${TDE_CERT_EXPORT_PASSWORD}'
-                );" \
-            >> /var/log/ola_install.log 2>&1 \
-            && success "  Exported: ${CERT_FILE}" \
-            || warn "  Failed to export ${CERT}. Check /var/log/ola_install.log"
-
-        # Harden: root read-only, no other access
-        chown root:root "${CERT_FILE}" "${CERT_KEY_FILE}" 2>/dev/null || true
-        chmod 400 "${CERT_FILE}" "${CERT_KEY_FILE}"
-
-        # Copy to the separate certificate SMB share
-        if mountpoint -q "${TDE_CERT_SMB_MOUNT}" 2>/dev/null; then
-            cp "${CERT_FILE}"     "${TDE_CERT_SMB_MOUNT}/" \
-                && cp "${CERT_KEY_FILE}" "${TDE_CERT_SMB_MOUNT}/" \
-                && success "  Copied to certificate share: ${TDE_CERT_SMB_MOUNT}/" \
-                || warn "  Failed to copy to certificate share."
-        else
-            warn "  Certificate share not mounted — manual copy required."
-        fi
-    done
-
-    echo ""
-    echo -e "${YEL}  ╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YEL}  ║  CRITICAL — TDE CERTIFICATE SECURITY                        ║${NC}"
-    echo -e "${YEL}  ║                                                              ║${NC}"
-    echo -e "${YEL}  ║  Local  : ${TDE_CERT_EXPORT_DIR}  (root only)${NC}"
-    echo -e "${YEL}  ║  Remote : ${TDE_CERT_SMB_MOUNT} (separate share)${NC}"
-    echo -e "${YEL}  ║                                                              ║${NC}"
-    echo -e "${YEL}  ║  Certificates are NOT stored in the backup folder and are   ║${NC}"
-    echo -e "${YEL}  ║  NOT copied to the backup SMB share. The mssql service      ║${NC}"
-    echo -e "${YEL}  ║  account has no access to the local certificate directory.  ║${NC}"
-    echo -e "${YEL}  ║                                                              ║${NC}"
-    echo -e "${YEL}  ║  Also store certificates + export password in a third,      ║${NC}"
-    echo -e "${YEL}  ║  offline location (USB / password manager / physical safe). ║${NC}"
-    echo -e "${YEL}  ║                                                              ║${NC}"
-    echo -e "${YEL}  ║  Without the certificate files + export password, TDE       ║${NC}"
-    echo -e "${YEL}  ║  backups CANNOT be restored on any other server.            ║${NC}"
-    echo -e "${YEL}  ╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-fi
-
-# ── 7f: Wrapper backup script (calls DatabaseBackup via sqlcmd) ───────────────
-# Ola's CleanupTime is in hours. Convert retention days → hours.
-CLEANUP_HOURS=$(( BACKUP_RETENTION * 24 ))
-
-BACKUP_SCRIPT="/usr/local/sbin/mssql_backup.sh"
-info "Creating wrapper backup script: ${BACKUP_SCRIPT}..."
-
-cat > "${BACKUP_SCRIPT}" <<BACKUPSCRIPT
-#!/usr/bin/env bash
-# =============================================================================
-# mssql_backup.sh
-# Wrapper around Ola Hallengren's DatabaseBackup stored procedure.
-# GitHub: https://github.com/olahallengren/sql-server-maintenance-solution
-#
-# Databases use TDE (Transparent Data Encryption), so every .bak file is
-# implicitly encrypted — no separate backup encryption parameters are needed.
-#
-# DatabaseBackup automatically:
-#   - Backs up all USER_DATABASES to individual per-database subfolders
-#   - Backup files are TDE-encrypted implicitly (no extra configuration needed)
-#   - Compresses backups
-#   - Verifies each backup (RESTORE VERIFYONLY)
-#   - Validates checksums
-#   - Logs all commands and results to dbo.CommandLog in master
-#   - Deletes backups older than @CleanupTime hours
-#
-# TDE certificate files are stored and synced SEPARATELY from backups:
-#   Local  : /etc/mssql-tde-certs/  (root:root 700, files 400)
-#   Remote : dedicated certificate SMB share (NOT the backup share)
-#
-# After the local backup completes, this script rsync-copies the backup
-# tree to the backup SMB share and purges old .bak files beyond the
-# retention period. Certificate files are never placed in the backup tree.
-# =============================================================================
-set -euo pipefail
-
-SQLCMD="${TOOLS_PATH}/sqlcmd"
-SA_PASSWORD="${SA_PASSWORD}"
-LOCAL_BACKUP_ROOT="${LOCAL_BACKUP_ROOT}"
-SMB_MOUNT="${SMB_MOUNT}"
-SMB_SHARE="${SMB_SHARE}"
-SMB_CRED_FILE="${SMB_CRED_FILE}"
-CLEANUP_HOURS="${CLEANUP_HOURS}"
-LOG_FILE="/var/log/mssql_backup.log"
-
-log() { echo "\$(date '+%F %T') \$*" | tee -a "\${LOG_FILE}"; }
-
-log "======================================================================"
-log "  SQL Server Backup — Ola Hallengren DatabaseBackup (TDE-encrypted)"
-log "  Local:  \${LOCAL_BACKUP_ROOT}"
-log "  Remote: \${SMB_SHARE} → \${SMB_MOUNT}"
-log "======================================================================"
-
-# ── Ensure SMB share is mounted ──────────────────────────────────────────────
-SMB_OK=0
-if ! mountpoint -q "\${SMB_MOUNT}" 2>/dev/null; then
-    log "SMB share not mounted — mounting now..."
-    mount -t cifs "\${SMB_SHARE}" "\${SMB_MOUNT}" \
-        -o "credentials=\${SMB_CRED_FILE},vers=3.0,file_mode=0770,dir_mode=0770" \
-        && SMB_OK=1 \
-        || log "WARNING: Cannot mount SMB share \${SMB_SHARE} — local backup will still proceed."
-else
-    SMB_OK=1
-fi
-
-# ── Run Ola Hallengren's DatabaseBackup ──────────────────────────────────────
-# DatabaseBackup creates this structure automatically:
-#   {LOCAL_BACKUP_ROOT}/{ServerName}/{InstanceName}/{DatabaseName}/FULL/
-# No @Encrypt parameter needed — TDE encrypts the backup files implicitly.
-# @Verify='Y'    — runs RESTORE VERIFYONLY after each backup
-# @Checksum='Y'  — enables page checksums during backup
-# @Compress='Y'  — uses SQL Server native compression (compatible with TDE)
-# @CleanupTime   — deletes .bak files older than N hours (never deletes newest)
-# @LogToTable='Y'— writes to dbo.CommandLog in master for auditing
-log "Running DatabaseBackup for USER_DATABASES (FULL, TDE-encrypted implicitly, compressed, verified)..."
-
-"\${SQLCMD}" \
-    -S localhost \
-    -U sa \
-    -P "\${SA_PASSWORD}" \
-    -C \
-    -d master \
-    -b \
-    -Q "EXECUTE dbo.DatabaseBackup
-        @Databases   = 'USER_DATABASES',
-        @Directory   = N'\${LOCAL_BACKUP_ROOT}',
-        @BackupType  = 'FULL',
-        @Compress    = 'Y',
-        @Verify      = 'Y',
-        @Checksum    = 'Y',
-        @CleanupTime = \${CLEANUP_HOURS},
-        @LogToTable  = 'Y';" \
-    >> "\${LOG_FILE}" 2>&1
-
-BACKUP_RC=\$?
-if [[ \${BACKUP_RC} -eq 0 ]]; then
-    log "DatabaseBackup completed successfully (TDE-encrypted)."
-else
-    log "ERROR: DatabaseBackup returned exit code \${BACKUP_RC}."
-    log "       Review dbo.CommandLog in master for details:"
-    log "       SELECT * FROM master.dbo.CommandLog ORDER BY StartTime DESC"
-    exit \${BACKUP_RC}
-fi
-
-# ── Copy backup tree to SMB share ────────────────────────────────────────────
-# rsync mirrors only .bak files and their directory structure.
-# TDE certificate files are NEVER placed here — they go to a separate share.
-if [[ \${SMB_OK} -eq 1 ]]; then
-    log "Syncing backup tree to SMB share: \${SMB_MOUNT}..."
-    if command -v rsync &>/dev/null; then
-        rsync -a --delete \
-            --include='*.bak' \
-            --include='*/' \
-            --exclude='*' \
-            "\${LOCAL_BACKUP_ROOT}/" "\${SMB_MOUNT}/" \
-            >> "\${LOG_FILE}" 2>&1 \
-            && log "rsync to SMB share completed." \
-            || log "WARNING: rsync to SMB share failed — backups are still local."
-    else
-        # Fallback: plain cp if rsync not available
-        cp -r "\${LOCAL_BACKUP_ROOT}/." "\${SMB_MOUNT}/" \
-            >> "\${LOG_FILE}" 2>&1 \
-            && log "cp to SMB share completed." \
-            || log "WARNING: cp to SMB share failed — backups are still local."
-    fi
-
-    # ── Remote cleanup: remove .bak files on SMB older than retention period ─
-    CLEANUP_DAYS=\$(( CLEANUP_HOURS / 24 ))
-    log "Cleaning up SMB backups older than \${CLEANUP_DAYS} days..."
-    find "\${SMB_MOUNT}" -name "*.bak" -mtime "+\${CLEANUP_DAYS}" \
-        -delete -print 2>/dev/null | \
-        while read -r f; do log "  Deleted remote: \$f"; done || \
-        log "  Note: Remote cleanup encountered errors (non-fatal)."
-else
-    log "WARNING: SMB share unavailable — skipping remote sync. Backups exist locally only."
-fi
-
-log "======================================================================"
-log "  Backup complete. Review dbo.CommandLog in master for full details."
-log "  Query: SELECT * FROM master.dbo.CommandLog ORDER BY StartTime DESC"
-log "======================================================================"
-exit 0
-BACKUPSCRIPT
-
-chmod +x "${BACKUP_SCRIPT}"
-
-# ── 7f2: Transaction log backup wrapper script ────────────────────────────────
-LOG_BACKUP_SCRIPT="/usr/local/sbin/mssql_logbackup.sh"
-info "Creating transaction log backup script: ${LOG_BACKUP_SCRIPT}..."
-
-cat > "${LOG_BACKUP_SCRIPT}" <<LOGBACKUPSCRIPT
-#!/usr/bin/env bash
-# =============================================================================
-# mssql_logbackup.sh
-# Transaction log backup via Ola Hallengren's DatabaseBackup procedure.
-#
-# Runs every 15 minutes to keep transaction logs trimmed. Without regular log backups,
-# databases in Full recovery model will have continuously growing log files.
-#
-# Log backups are stored alongside full backups in per-database subfolders
-# and synced to the SMB share.
-# =============================================================================
-set -euo pipefail
-
-SQLCMD="${TOOLS_PATH}/sqlcmd"
-SA_PASSWORD="${SA_PASSWORD}"
-LOCAL_BACKUP_ROOT="${LOCAL_BACKUP_ROOT}"
-SMB_MOUNT="${SMB_MOUNT}"
-SMB_SHARE="${SMB_SHARE}"
-SMB_CRED_FILE="${SMB_CRED_FILE}"
-CLEANUP_HOURS="${CLEANUP_HOURS}"
-LOG_FILE="/var/log/mssql_backup.log"
-
-log() { echo "\$(date '+%F %T') \$*" | tee -a "\${LOG_FILE}"; }
-
-log "── Transaction Log Backup ─────────────────────────────────────────"
-
-# ── Ensure SMB share is mounted ──────────────────────────────────────────────
-SMB_OK=0
-if ! mountpoint -q "\${SMB_MOUNT}" 2>/dev/null; then
-    log "SMB share not mounted — mounting now..."
-    mount -t cifs "\${SMB_SHARE}" "\${SMB_MOUNT}" \
-        -o "credentials=\${SMB_CRED_FILE},vers=3.0,file_mode=0770,dir_mode=0770" \
-        && SMB_OK=1 \
-        || log "WARNING: Cannot mount SMB share \${SMB_SHARE} — local log backup will still proceed."
-else
-    SMB_OK=1
-fi
-
-# ── Run Ola Hallengren's DatabaseBackup (LOG) ────────────────────────────────
-log "Running DatabaseBackup for USER_DATABASES (LOG)..."
-
-"\${SQLCMD}" \
-    -S localhost \
-    -U sa \
-    -P "\${SA_PASSWORD}" \
-    -C \
-    -d master \
-    -b \
-    -Q "EXECUTE dbo.DatabaseBackup
-        @Databases   = 'USER_DATABASES',
-        @Directory   = N'\${LOCAL_BACKUP_ROOT}',
-        @BackupType  = 'LOG',
-        @Compress    = 'Y',
-        @Verify      = 'Y',
-        @Checksum    = 'Y',
-        @CleanupTime = \${CLEANUP_HOURS},
-        @LogToTable  = 'Y';" \
-    >> "\${LOG_FILE}" 2>&1
-
-BACKUP_RC=\$?
-if [[ \${BACKUP_RC} -eq 0 ]]; then
-    log "Log backup completed successfully."
-else
-    log "ERROR: Log backup returned exit code \${BACKUP_RC}."
-    exit \${BACKUP_RC}
-fi
-
-# ── Sync to SMB share ────────────────────────────────────────────────────────
-if [[ \${SMB_OK} -eq 1 ]]; then
-    log "Syncing log backups to SMB share..."
-    if command -v rsync &>/dev/null; then
-        rsync -a \
-            --include='*.trn' \
-            --include='*/' \
-            --exclude='*' \
-            "\${LOCAL_BACKUP_ROOT}/" "\${SMB_MOUNT}/" \
-            >> "\${LOG_FILE}" 2>&1 \
-            && log "rsync (log) to SMB share completed." \
-            || log "WARNING: rsync (log) to SMB share failed — log backups are still local."
-    else
-        cp -r "\${LOCAL_BACKUP_ROOT}/." "\${SMB_MOUNT}/" \
-            >> "\${LOG_FILE}" 2>&1 \
-            && log "cp (log) to SMB share completed." \
-            || log "WARNING: cp (log) to SMB share failed — log backups are still local."
-    fi
-else
-    log "WARNING: SMB share unavailable — skipping remote sync for log backups."
-fi
-
-log "── Transaction Log Backup complete ────────────────────────────────"
-exit 0
-LOGBACKUPSCRIPT
-
-chmod +x "${LOG_BACKUP_SCRIPT}"
-
-# ── 7f3: Install rsync (used for SMB copy) ───────────────────────────────────
-info "Installing rsync..."
-apt-get install -y -qq rsync
-
-# ── 7g: Cron jobs ────────────────────────────────────────────────────────────
-apt-get install -y -qq cron
-systemctl enable --now cron
-
-CRON_FILE="/etc/cron.d/mssql_backup"
-cat > "${CRON_FILE}" <<CRONEOF
-# SQL Server FULL backup via Ola Hallengren's DatabaseBackup procedure
-# Runs daily at 02:00. Script logs to /var/log/mssql_backup.log internally.
-0 2 * * * root ${BACKUP_SCRIPT} >/dev/null 2>&1
-
-# SQL Server transaction LOG backup — every 15 minutes (keeps log files trimmed)
-# Skips the 02:00 hour to avoid overlapping with the full backup.
-*/15 0,1,3-23 * * * root ${LOG_BACKUP_SCRIPT} >/dev/null 2>&1
-CRONEOF
-chmod 644 "${CRON_FILE}"
-info "Cron jobs created: FULL daily at 02:00, LOG every 15 min (except 02:00)."
-
-# ── 7h: Log file ──────────────────────────────────────────────────────────────
-touch /var/log/mssql_backup.log
-chmod 640 /var/log/mssql_backup.log
-
-# ── 7i: Run initial backup immediately ────────────────────────────────────────
-info "Running initial backup now (so monitoring won't alarm before 02:00)..."
-"${BACKUP_SCRIPT}" >> /var/log/mssql_backup.log 2>&1 \
-    && success "Initial backup completed successfully." \
-    || warn "Initial backup failed — check /var/log/mssql_backup.log for details."
-
-success "Ola Hallengren backup system configured."
+echo -e "${CYN}━━ Step 7: Backup Setup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "  Library          : Ola Hallengren SQL Server Maintenance Solution"
-echo "  Source           : https://github.com/olahallengren/sql-server-maintenance-solution"
-echo "  Installed in     : master database (dbo.DatabaseBackup, dbo.CommandExecute, etc.)"
-echo "  Full backup      : ${BACKUP_SCRIPT}"
-echo "  Log backup       : ${LOG_BACKUP_SCRIPT}"
-echo "  Full schedule    : daily 02:00"
-echo "  Log schedule     : every 15 min (except 02:00)"
-echo "  Backup log       : /var/log/mssql_backup.log"
-echo "  CommandLog table : master.dbo.CommandLog"
-echo "  Local backup dir : ${LOCAL_BACKUP_ROOT}"
-echo "  SMB mount        : ${SMB_MOUNT}"
-echo "  Retention        : ${BACKUP_RETENTION} days (${CLEANUP_HOURS} hours, enforced by DatabaseBackup)"
+info "Backup automation is handled separately by: sql-server-linux-backups"
+info "https://github.com/MarkLFT/sql-server-linux-backups"
+echo ""
+echo -e "${YEL}  Run the backup installer after this script completes and the server${NC}"
+echo -e "${YEL}  has been rebooted:${NC}"
+echo ""
+echo -e "${YEL}    curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/main/install.sh \\${NC}"
+echo -e "${YEL}      -o /tmp/install-backups.sh${NC}"
+echo -e "${YEL}    chmod +x /tmp/install-backups.sh && sudo /tmp/install-backups.sh${NC}"
+echo ""
 
 # =============================================================================
 # SECTION 8 — OS kernel tuning (Microsoft-recommended for SQL Server)
@@ -1526,7 +988,7 @@ echo -e "  SQL Server version   : $(${TOOLS_PATH}/sqlcmd -S localhost -U sa -P "
 echo -e "  SQL Server port      : 1433"
 echo -e "  SQL memory limit     : ${SQL_MEM_LIMIT_MB} MB"
 if [[ "${SQL_PID,,}" != "express" ]]; then
-echo -e "  SQL Server Agent     : enabled (backups use cron, not Agent)"
+echo -e "  SQL Server Agent     : enabled"
 else
 echo -e "  SQL Server Agent     : not available (Express edition)"
 fi
@@ -1539,25 +1001,14 @@ echo -e "  NTP                  : chrony → ${NTP_SERVER}"
 echo -e "  Auto security updates: enabled (security patches only, no auto-reboot)"
 echo -e "  SSH hardened         : ${SSH_HARDEN}"
 echo -e "  fail2ban             : enabled — SSH jail active (whitelist: ${IGNOREIP_LINE})"
-echo -e "  Ola Hallengren       : master.dbo.DatabaseBackup (installed)"
-echo -e "  Backup encryption    : TDE (implicit — databases encrypted at rest)"
-echo -e "  TDE cert local store : /etc/mssql-tde-certs/  (root:root 700)"
-echo -e "  TDE cert remote      : ${TDE_CERT_SMB_SHARE}  (separate share)"
-echo -e "  Backup wrapper       : ${BACKUP_SCRIPT}"
-echo -e "  Backup schedule      : daily 02:00 (/etc/cron.d/mssql_backup)"
-echo -e "  Backup audit log     : SELECT * FROM master.dbo.CommandLog ORDER BY StartTime DESC"
 echo ""
 echo -e "${YEL}  ► A reboot is recommended to fully apply kernel tuning, verify${NC}"
 echo -e "${YEL}    hostname, iptables, NTP, and SMB mount persistence.${NC}"
 echo ""
-echo -e "${YEL}  ► To test a manual backup now:${NC}"
-echo -e "${YEL}    sudo ${BACKUP_SCRIPT}${NC}"
-echo ""
-echo -e "${YEL}  ► To view Ola Hallengren backup history/errors:${NC}"
-echo -e "${YEL}    sqlcmd -S localhost -U sa -d master -C${NC} \\"
-echo -e "${YEL}      -Q \"SELECT DatabaseName,BackupType,StartTime,EndTime,\"${NC}"
-echo -e "${YEL}           \"Status,ErrorNumber,ErrorMessage\"${NC}"
-echo -e "${YEL}           \"FROM dbo.CommandLog ORDER BY StartTime DESC\"${NC}"
+echo -e "${YEL}  ► NEXT STEP: Install backup automation after reboot:${NC}"
+echo -e "${YEL}    curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/main/install.sh \\${NC}"
+echo -e "${YEL}      -o /tmp/install-backups.sh${NC}"
+echo -e "${YEL}    chmod +x /tmp/install-backups.sh && sudo /tmp/install-backups.sh${NC}"
 echo ""
 echo -e "${YEL}  ► To check NTP sync:            chronyc tracking${NC}"
 echo -e "${YEL}  ► To check fail2ban SSH jail:   fail2ban-client status sshd${NC}"

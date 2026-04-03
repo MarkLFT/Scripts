@@ -188,17 +188,17 @@ Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install
 
 ## SQL Server
 
-### SQL Server on Linux (Ubuntu 24.04) — Full Setup with Backup
+### SQL Server on Linux (Ubuntu 24.04) — Server Setup
 
-End-to-end provisioning script for a dedicated SQL Server 2025 instance on Ubuntu 24.04 LTS.
-Installs SQL Server, configures MSDTC, replaces UFW with iptables, sets up automated backups
-using [Ola Hallengren's Maintenance Solution](https://github.com/olahallengren/sql-server-maintenance-solution),
-and hardens the OS.
+Provisioning script for a dedicated SQL Server 2025 instance on Ubuntu 24.04 LTS.
+Installs SQL Server, configures MSDTC, replaces UFW with iptables, and hardens the OS.
+
+Backup automation is handled separately by [sql-server-linux-backups](https://github.com/MarkLFT/sql-server-linux-backups) — run that installer after this script completes and the server is rebooted.
 
 Run as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-sql-linux-with-backup.sh -o /tmp/install-sql-linux-with-backup.sh && sudo bash /tmp/install-sql-linux-with-backup.sh
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-sqlserver-linux.sh -o /tmp/install-sqlserver-linux.sh && sudo bash /tmp/install-sqlserver-linux.sh
 ```
 
 #### What it does
@@ -212,7 +212,7 @@ curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-sql-li
 | 4 | Adds iptables rules for SQL Server (1433), MSDTC ports, and NAT PREROUTING for port 135 |
 | 5 | Installs iptables-persistent and saves all rules |
 | 6 | Removes UFW and rebuilds a clean iptables ruleset (INPUT DROP policy, SSH/SQL/MSDTC allowed) |
-| 7 | Installs Ola Hallengren's Maintenance Solution, creates full and transaction log backup wrapper scripts, mounts a remote SMB share for backup copies, exports TDE certificates to a separate SMB share, and schedules cron jobs (daily full, log every 15 min). Runs an initial full backup immediately so monitoring does not alarm before the first scheduled run |
+| 7 | *(Backup — handled by [sql-server-linux-backups](https://github.com/MarkLFT/sql-server-linux-backups))* |
 | 8 | Installs and activates the TuneD `mssql` profile (Microsoft-recommended kernel tuning) |
 | 9 | Installs and configures chrony for NTP time synchronisation |
 | 10 | Enables unattended security updates (security patches only, no auto-reboot) |
@@ -234,17 +234,6 @@ All settings are collected before any changes are made. A summary is displayed f
 | SA password | *(none)* | Must meet SQL Server complexity rules (>=8 chars, 3-of-4 categories) |
 | Memory limit | 85% of detected RAM | SQL Server memory cap in MB (minimum 2048) |
 | MSDTC ports | 13500 / 51999 | RPC and DTC TCP ports (Microsoft recommended) |
-| Local backup root | Same as backup directory | Root path for per-database backup subfolders |
-| SMB share | *(none)* | Remote share for backup copies (`//server/share`) |
-| SMB username | *(none)* | Credentials for the backup SMB share |
-| SMB password | *(none)* | Credentials for the backup SMB share |
-| SMB mount point | `/mnt/sqlbackups_remote` | Local mount point for the backup share |
-| Backup retention | 30 days | How long to keep backups locally and remotely |
-| TDE cert export password | *(none)* | Password to protect the exported TDE private key |
-| TDE cert SMB share | *(none)* | Separate share for certificate storage (must differ from backup share) |
-| TDE cert SMB username | *(none)* | Credentials for the certificate SMB share |
-| TDE cert SMB password | *(none)* | Credentials for the certificate SMB share |
-| TDE cert mount point | `/mnt/sqlcerts_remote` | Local mount point for the certificate share |
 | NTP server | `pool.ntp.org` | NTP server or pool for chrony |
 | SSH hardening | *(ask y/n)* | Disable root login and password authentication |
 | fail2ban whitelist | *(blank)* | Management IP/subnet to never ban (e.g. `192.168.1.0/24`) |
@@ -252,46 +241,6 @@ All settings are collected before any changes are made. A summary is displayed f
 #### Security notes
 
 - All passwords and credentials are entered interactively and never stored in the script itself.
-- SMB credentials are stored in root-only files (`chmod 600`) under `/root/`.
-- TDE certificates are stored separately from backups — locally in `/etc/mssql-tde-certs/` (root-only) and on a dedicated SMB share distinct from the backup share.
-- The TDE certificate export password must be stored offline (password manager or physical safe) — without it, backups cannot be restored on another server.
-- If the remote SMB share is unreachable, backups still complete locally — SMB mount failure is non-fatal.
-
-#### Backup schedule
-
-| Type | Schedule | Script | Description |
-| ---- | -------- | ------ | ----------- |
-| Full | Daily at 02:00 | `/usr/local/sbin/mssql_backup.sh` | Full backup of all user databases, verified with `RESTORE VERIFYONLY`, synced to SMB share |
-| Log | Every 15 min (except 02:00) | `/usr/local/sbin/mssql_logbackup.sh` | Transaction log backup to keep log files trimmed — required for databases in Full recovery model |
-
-Both scripts log to `/var/log/mssql_backup.log` and record all operations in the `master.dbo.CommandLog` table.
-
-Cron jobs are defined in `/etc/cron.d/mssql_backup`.
-
-#### Useful commands
-
-```bash
-# Run a manual full backup
-sudo /usr/local/sbin/mssql_backup.sh
-
-# Run a manual log backup
-sudo /usr/local/sbin/mssql_logbackup.sh
-
-# View backup log
-sudo tail -50 /var/log/mssql_backup.log
-
-# Check backup history in SQL Server
-/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT database_name, type, backup_start_date, backup_finish_date FROM msdb.dbo.backupset ORDER BY backup_start_date DESC;"
-
-# Check Ola Hallengren's command log
-/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT DatabaseName, CommandType, StartTime, EndTime, ErrorNumber FROM master.dbo.CommandLog ORDER BY StartTime DESC;"
-
-# Check backup files on disk
-sudo find /sqlbackup -name "*.bak" -o -name "*.trn" | head -20
-
-# Verify SMB share is mounted
-mountpoint -q /mnt/sqlbackups_remote && echo "Mounted" || echo "Not mounted"
-```
 
 ### Migrate UFW to iptables (Existing SQL Server Hosts)
 
@@ -318,18 +267,3 @@ To roll back if something goes wrong:
 ```bash
 sudo iptables-restore < /root/firewall-migration-*/iptables-v4-before.rules
 ```
-
-#### Hotfix script
-
-For servers already deployed, a hotfix script applies all fixes without rebuilding:
-
-- Makes SMB mount failure non-fatal (local backup always proceeds)
-- Fixes duplicate log lines from cron
-- Adds transaction log backups every 15 minutes
-- Runs both backups immediately
-
-```bash
-curl -sL https://raw.githubusercontent.com/MarkLFT/Scripts/main/fix-sql-backup-smb-fatal.sh | sudo bash
-```
-
-Safe to run multiple times — each patch is skipped if already applied.
