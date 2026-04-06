@@ -462,7 +462,13 @@ info "Setting network.rpcport = ${MSDTC_RPC_PORT}..."
 info "Setting distributedtransaction.servertcpport = ${MSDTC_DTC_PORT}..."
 /opt/mssql/bin/mssql-conf set distributedtransaction.servertcpport "${MSDTC_DTC_PORT}"
 
-info "Restarting SQL Server to activate MSDTC ports..."
+info "Disabling secure-only RPC calls (required for non-domain Linux hosts)..."
+/opt/mssql/bin/mssql-conf set distributedtransaction.allowonlysecurerpccalls 0
+
+info "Turning off RPC security (required for non-domain Linux hosts)..."
+/opt/mssql/bin/mssql-conf set distributedtransaction.turnoffrpcsecurity 1
+
+info "Restarting SQL Server to activate MSDTC settings..."
 systemctl restart mssql-server
 sleep 5
 
