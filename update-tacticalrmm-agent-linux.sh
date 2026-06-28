@@ -132,11 +132,28 @@ print_header
 # --- Pre-flight checks -------------------------------------------------------
 print_section "Pre-flight"
 
+# The compiled rmmagent binary is the authoritative proof of an existing
+# install — the installer always places it here.
 [[ -x "$RMMAGENT_BIN" ]] \
     || die "rmmagent not found at $RMMAGENT_BIN — run the installer first (install-tacticalrmm-agent-linux.sh)"
 
-if ! systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
-    die "Service '${SERVICE}' not found — run the installer first"
+# Detect the systemd unit using several methods — parsing list-unit-files is
+# unreliable across systemd versions, so fall back to systemctl cat and the
+# known unit-file locations. Missing detection is a warning, not fatal: the
+# binary already proves the install, and the post-update step verifies the
+# service is active.
+service_present() {
+    systemctl cat "${SERVICE}.service" >/dev/null 2>&1 && return 0
+    systemctl is-enabled "${SERVICE}" >/dev/null 2>&1 && return 0
+    systemctl is-active  "${SERVICE}" >/dev/null 2>&1 && return 0
+    [[ -f "/etc/systemd/system/${SERVICE}.service" ]]  && return 0
+    [[ -f "/lib/systemd/system/${SERVICE}.service" ]]  && return 0
+    [[ -f "/usr/lib/systemd/system/${SERVICE}.service" ]] && return 0
+    return 1
+}
+
+if ! service_present; then
+    log_warn "Could not confirm the '${SERVICE}' systemd unit — proceeding on the binary; the update will verify the service afterwards."
 fi
 
 PREV_VERSION=$(get_version)
