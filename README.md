@@ -28,6 +28,18 @@ Prompts for all settings including proxy mode, database type (SQLite3/MySQL/Post
 curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-proxy-full.sh -o /tmp/install-zabbix-proxy-full.sh && sudo bash /tmp/install-zabbix-proxy-full.sh
 ```
 
+#### Updating the proxy
+
+The installer adds the official Zabbix apt repository, so minor/patch updates **within the installed major version** are handled by apt — no re-run of the installer is needed:
+
+```bash
+sudo apt-get update
+sudo apt-get install --only-upgrade 'zabbix-proxy*' 'zabbix-sql-scripts'
+sudo systemctl restart zabbix-proxy-sqlite3   # or zabbix-proxy-mysql / -pgsql to match your DB
+```
+
+To move to a **new major version** (e.g. 7.0 → 7.4), the repository definition itself must change. Re-run the installer and enter the new version when prompted — it adds the new repo and upgrades in place.
+
 ### Zabbix Agent
 
 Installs Zabbix Agent 2 on systems to be monitored. Configures it to connect to a local proxy.
@@ -173,6 +185,28 @@ systemctl status tacticalagent
 systemctl status meshagent
 ```
 
+##### Updating the Linux agent
+
+Because the Linux agent is **compiled from source** (community edition), the TacticalRMM server cannot push agent updates to it the way it does for the official signed Windows agent. The two components behave differently:
+
+- **MeshCentral agent** — self-updates from the mesh server automatically. Nothing to do.
+- **rmmagent binary** — never updates on its own. It will silently drift behind the server version until it is rebuilt.
+
+`update-tacticalrmm-agent-linux.sh` rebuilds the agent: it records the current version, recompiles `rmmagent` from the latest [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source via the community script's `update` mode, hot-swaps the binary, and verifies the service. The mesh agent and all configuration are left untouched. It is non-interactive and safe to re-run.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/update-tacticalrmm-agent-linux.sh \
+  -o /tmp/update-trmm-agent-linux.sh && sudo bash /tmp/update-trmm-agent-linux.sh
+```
+
+Run it from TacticalRMM (with an optional Discord notification on update/failure):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/update-tacticalrmm-agent-linux.sh | sudo bash -s -- "{{global.DiscordWebhook}}"
+```
+
+> **Tip:** Add this as a scheduled TacticalRMM task (or a cron job) on your Linux agents so the community agent tracks the server version over time. Compilation takes a few minutes each run.
+
 #### Windows Agent (TacticalRMM)
 
 Uses the TacticalRMM deployment API to generate the installer automatically — no auth token needed.
@@ -241,6 +275,21 @@ All settings are collected before any changes are made. A summary is displayed f
 #### Security notes
 
 - All passwords and credentials are entered interactively and never stored in the script itself.
+
+#### Updating SQL Server
+
+The installer is a **one-time provisioning** script — do not re-run it to patch an existing server. Updates are handled by apt:
+
+- **OS security patches** apply automatically via the `unattended-upgrades` configuration the installer enables (Step 10). No reboot is taken automatically — schedule reboots yourself.
+- **SQL Server cumulative updates** (`mssql-server`) are *not* applied automatically. Apply them deliberately during a maintenance window:
+
+```bash
+sudo apt-get update
+sudo apt-get install --only-upgrade mssql-server mssql-tools18
+systemctl status mssql-server
+```
+
+> SQL Server CUs stay within the installed major version (e.g. 2025). Back up your databases before applying, and confirm the new build with `SELECT @@VERSION` afterwards. Backups are handled by [sql-server-linux-backups](https://github.com/MarkLFT/sql-server-linux-backups).
 
 ### Migrate UFW to iptables (Existing SQL Server Hosts)
 
