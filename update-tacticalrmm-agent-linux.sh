@@ -171,6 +171,17 @@ done
 # Ensure a Go installed under /usr/local/go is on PATH for non-login shells (cron)
 [[ -d /usr/local/go/bin ]] && export PATH="$PATH:/usr/local/go/bin"
 
+# Ensure a sane build environment. When this runs from a detached systemd unit
+# (the TacticalRMM bootstrap) the environment is stripped and HOME is unset, so
+# `go build` cannot locate a build cache and aborts INSTANTLY with "GOCACHE is
+# not defined" — exit 1 before a single module downloads. Pin HOME and the Go
+# cache/module paths to a writable location so the compile runs in any context.
+[[ -n "${HOME:-}" && -w "${HOME:-/nonexistent}" ]] || export HOME=/root
+export GOCACHE="${GOCACHE:-$HOME/.cache/go-build}"
+export GOPATH="${GOPATH:-$HOME/go}"
+mkdir -p "$GOCACHE" "$GOPATH" 2>/dev/null || true
+log_info "Build env: HOME=$HOME GOCACHE=$GOCACHE"
+
 # =============================================================================
 # UPDATE
 # =============================================================================
@@ -188,15 +199,15 @@ wget -q "https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/refs
 chmod +x "$COMMUNITY_SCRIPT"
 
 # Source tarball that the community script compiles from. Its own download is a
-# single `wget -q` with no retries, so a transient HTTP error (e.g. a 429 when a
-# whole fleet hits codeload.github.com at once) aborts the run instantly under
-# `set -e`. We fetch it ourselves with retry+backoff and neutralise the
-# community script's download so it reuses our copy.
+# single `wget -q` with no retries under `set -e`, so any transient HTTP error
+# from GitHub aborts the whole run instantly (observed once as wget exit 8). We
+# fetch it ourselves with retry+backoff and neutralise the community script's
+# download so it reuses our copy.
 AGENT_SRC_URL="https://github.com/amidaware/rmmagent/archive/refs/heads/master.tar.gz"
 AGENT_SRC_TARBALL="/tmp/rmmagent.tar.gz"
 
-# Stagger fleet-wide runs so the agents don't all hit GitHub in the same instant.
-# Only when non-interactive (TacticalRMM / cron) — manual SSH runs aren't delayed.
+# Small stagger before the network step, in case a scheduled fleet-wide run fires
+# many agents at once. Non-interactive only — manual SSH runs aren't delayed.
 if [[ ! -t 1 ]]; then
     JITTER=$(( RANDOM % 45 ))
     [[ "$JITTER" -gt 0 ]] && { log_info "Staggering fleet load — waiting ${JITTER}s..."; sleep "$JITTER"; }
@@ -233,14 +244,20 @@ echo ""
 # not touch the mesh agent or any agent configuration. Retry once as a backstop
 # for transient failures during the Go module fetch (compile is local only, and
 # the service is not touched until the build succeeds, so a retry is safe).
+# NOTE: run WITHOUT --simple so the real go build output is visible — --simple
+# sends the compile to /dev/null, which previously hid the actual error and made
+# failures show only as a bare exit code. Capture it so a failure prints the tail.
+UPDATE_LOG="$TMPDIR_WORK/community-update.log"
 UPDATE_EXIT=1
 for attempt in 1 2; do
-    bash "$COMMUNITY_SCRIPT" --simple update
-    UPDATE_EXIT=$?
+    bash "$COMMUNITY_SCRIPT" update 2>&1 | tee "$UPDATE_LOG"
+    UPDATE_EXIT=${PIPESTATUS[0]}
     [[ $UPDATE_EXIT -eq 0 ]] && break
     [[ $attempt -lt 2 ]] && { log_warn "Update attempt ${attempt} failed (exit ${UPDATE_EXIT}) — retrying in 20s..."; sleep 20; }
 done
 if [[ $UPDATE_EXIT -ne 0 ]]; then
+    log_warn "Last lines of community update output:"
+    tail -n 30 "$UPDATE_LOG" 2>/dev/null | sed 's/^/      /'
     die "Community update script exited with code $UPDATE_EXIT"
 fi
 
