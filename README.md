@@ -194,18 +194,27 @@ Because the Linux agent is **compiled from source** (community edition), the Tac
 
 `update-tacticalrmm-agent-linux.sh` rebuilds the agent: it records the current version, recompiles `rmmagent` from the latest [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source via the community script's `update` mode, hot-swaps the binary, and verifies the service. The mesh agent and all configuration are left untouched. It is non-interactive and safe to re-run.
 
+**Manual / SSH (interactive):**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/update-tacticalrmm-agent-linux.sh \
   -o /tmp/update-trmm-agent-linux.sh && sudo bash /tmp/update-trmm-agent-linux.sh
 ```
 
-Run it from TacticalRMM (with an optional Discord notification on update/failure):
+**From TacticalRMM (use the bootstrap — do NOT pipe the updater straight to bash):**
+
+The update restarts the `tacticalagent` service — the very service running the script. A script launched by the agent shares the agent's systemd cgroup, so stopping the agent would kill the update mid-run and could leave the agent offline. Use `trmm-self-update-bootstrap.sh`, which launches the updater **detached** via `systemd-run` so it survives the restart, and returns immediately so TacticalRMM records success.
+
+In **Settings → Script Manager → New** (type **Shell**, no sudo — the agent runs as root), paste the contents of [`trmm-self-update-bootstrap.sh`](trmm-self-update-bootstrap.sh) and set the script argument to `{{global.DiscordWebhook}}` (optional). Then run it on-demand or as a scheduled task.
+
+Follow progress on a host, and confirm the new version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/update-tacticalrmm-agent-linux.sh | sudo bash -s -- "{{global.DiscordWebhook}}"
+journalctl -u trmm-self-update -f
+/usr/local/bin/rmmagent -version | head -1
 ```
 
-> **Tip:** Add this as a scheduled TacticalRMM task (or a cron job) on your Linux agents so the community agent tracks the server version over time. Compilation takes a few minutes each run.
+> **Tip:** Add the bootstrap as a scheduled TacticalRMM task so the community agent tracks the server version over time. Each run pre-fetches the source with retries and compiles in a few minutes; a transient GitHub error is retried rather than aborting the run.
 
 #### Windows Agent (TacticalRMM)
 
