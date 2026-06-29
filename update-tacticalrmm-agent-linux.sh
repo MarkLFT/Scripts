@@ -187,15 +187,59 @@ wget -q "https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/refs
     || die "Could not download community script from GitHub"
 chmod +x "$COMMUNITY_SCRIPT"
 
+# Source tarball that the community script compiles from. Its own download is a
+# single `wget -q` with no retries, so a transient HTTP error (e.g. a 429 when a
+# whole fleet hits codeload.github.com at once) aborts the run instantly under
+# `set -e`. We fetch it ourselves with retry+backoff and neutralise the
+# community script's download so it reuses our copy.
+AGENT_SRC_URL="https://github.com/amidaware/rmmagent/archive/refs/heads/master.tar.gz"
+AGENT_SRC_TARBALL="/tmp/rmmagent.tar.gz"
+
+# Stagger fleet-wide runs so the agents don't all hit GitHub in the same instant.
+# Only when non-interactive (TacticalRMM / cron) — manual SSH runs aren't delayed.
+if [[ ! -t 1 ]]; then
+    JITTER=$(( RANDOM % 45 ))
+    [[ "$JITTER" -gt 0 ]] && { log_info "Staggering fleet load — waiting ${JITTER}s..."; sleep "$JITTER"; }
+fi
+
+log_info "Pre-fetching agent source with retries..."
+SRC_OK=0
+for attempt in 1 2 3 4 5; do
+    if curl -fsSL "$AGENT_SRC_URL" -o "$AGENT_SRC_TARBALL" 2>/dev/null && [[ -s "$AGENT_SRC_TARBALL" ]]; then
+        SRC_OK=1
+        log_ok "Source downloaded ($(du -h "$AGENT_SRC_TARBALL" 2>/dev/null | cut -f1))"
+        break
+    fi
+    log_warn "Source fetch attempt ${attempt}/5 failed — retrying in $((attempt*8))s..."
+    sleep $((attempt*8))
+done
+
+if [[ "$SRC_OK" -eq 1 ]]; then
+    # Replace any wget line in the community script that writes the tarball with a
+    # no-op, so it compiles from the copy we just fetched. If this fails to match
+    # (upstream changed), the community script simply downloads it as before — no
+    # worse than the current behaviour.
+    sed -i 's|^[[:space:]]*wget .*-O /tmp/rmmagent.tar.gz.*$|: # source pre-fetched by updater|' "$COMMUNITY_SCRIPT"
+else
+    log_warn "Pre-fetch failed after retries — letting the community script fetch the source itself"
+fi
+
 echo ""
 log_info "Recompiling rmmagent from the latest source — this may take several minutes."
 echo ""
 
 # The community "update" mode recompiles from amidaware master and hot-swaps
 # the binary (stop service → replace → start). It takes no arguments and does
-# not touch the mesh agent or any agent configuration.
-bash "$COMMUNITY_SCRIPT" --simple update
-UPDATE_EXIT=$?
+# not touch the mesh agent or any agent configuration. Retry once as a backstop
+# for transient failures during the Go module fetch (compile is local only, and
+# the service is not touched until the build succeeds, so a retry is safe).
+UPDATE_EXIT=1
+for attempt in 1 2; do
+    bash "$COMMUNITY_SCRIPT" --simple update
+    UPDATE_EXIT=$?
+    [[ $UPDATE_EXIT -eq 0 ]] && break
+    [[ $attempt -lt 2 ]] && { log_warn "Update attempt ${attempt} failed (exit ${UPDATE_EXIT}) — retrying in 20s..."; sleep 20; }
+done
 if [[ $UPDATE_EXIT -ne 0 ]]; then
     die "Community update script exited with code $UPDATE_EXIT"
 fi
