@@ -696,7 +696,7 @@ echo -e "${YEL}    iptables-save > /etc/iptables/rules.v4${NC}"
 #   - TDE certificate management
 #
 # Run it after this script completes:
-#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/main/install.sh -o /tmp/install-backups.sh
+#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/master/install.sh -o /tmp/install-backups.sh
 #   chmod +x /tmp/install-backups.sh && sudo /tmp/install-backups.sh
 # =============================================================================
 echo ""
@@ -708,7 +708,7 @@ echo ""
 echo -e "${YEL}  Run the backup installer after this script completes and the server${NC}"
 echo -e "${YEL}  has been rebooted:${NC}"
 echo ""
-echo -e "${YEL}    curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/main/install.sh \\"
+echo -e "${YEL}    curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/master/install.sh \\"
 echo -e "      -o /tmp/install-backups.sh"
 echo -e "    chmod +x /tmp/install-backups.sh && sudo /tmp/install-backups.sh${NC}"
 echo ""
@@ -1012,7 +1012,7 @@ echo -e "${YEL}  ► A reboot is recommended to fully apply kernel tuning, verif
 echo -e "${YEL}    hostname, iptables, NTP, and SMB mount persistence.${NC}"
 echo ""
 echo -e "${YEL}  ► NEXT STEP: Install backup automation after reboot:${NC}"
-echo -e "${YEL}    curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/main/install.sh \\"
+echo -e "${YEL}    curl -fsSL https://raw.githubusercontent.com/MarkLFT/sql-server-linux-backups/master/install.sh \\"
 echo -e "      -o /tmp/install-backups.sh"
 echo -e "    chmod +x /tmp/install-backups.sh && sudo /tmp/install-backups.sh${NC}"
 echo ""

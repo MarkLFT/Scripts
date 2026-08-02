@@ -12,8 +12,8 @@ Infrastructure automation scripts for deploying and configuring enterprise monit
 - `install-zabbix-agent-linux-tactical-rmm.sh` — Zabbix Agent 2 for Linux (via TacticalRMM)
 - `install-zabbix-agent-windows-tactical-rmm.ps1` — Zabbix Agent 2 for Windows (via TacticalRMM)
 - `setup-zabbix-discovery.sh` — Zabbix network discovery setup via API
-- `install-tacticalrmm-agent-linux.sh` — TacticalRMM agent for Linux (community edition)
-- `update-tacticalrmm-agent-linux.sh` — Rebuilds the community Linux rmmagent from source (server can't auto-update it)
+- `install-tacticalrmm-agent-linux.sh` — TacticalRMM agent for Linux (community edition); compiles rmmagent from source via a pinned, checksum-verified community build script. Does not install MeshCentral — links an existing mesh agent's node id if one is present
+- `update-tacticalrmm-agent-linux.sh` — Rebuilds the community Linux rmmagent from source (server can't auto-update it); shares the same community-script pin as the installer
 - `trmm-self-update-bootstrap.sh` — TRMM Script Manager wrapper that runs the updater detached via systemd-run (survives the agent restart)
 - `install-tacticalrmm-agent-windows.ps1` — TacticalRMM agent for Windows
 - `install-sqlserver-linux.sh` — Full SQL Server 2025 provisioning on Ubuntu 24.04

@@ -6,7 +6,7 @@
 #   $ZabbixProxy         = {{site.ZabbixProxy}}           e.g. 10.10.1.5
 #   $ZabbixServer        = {{site.ZabbixServer}}          e.g. 10.10.0.10
 #   $DiscordWebhook      = {{global.DiscordWebhook}}      e.g. https://discord.com/api/webhooks/...
-#   $ZabbixVersion       = {{global.ZabbixVersion}}       e.g. 7.4.0
+#   $ZabbixVersion       = {{global.ZabbixVersion}}       e.g. 7.4.13 (must be a published patch release)
 #   $ZabbixMSSQLPassword = {{global.ZabbixMSSQLPassword}} Password for the 'zabbix' SQL login (optional)
 #   $ZabbixHostName      = {{agent.ZabbixHostName}}        Custom Zabbix hostname (optional, defaults to COMPUTERNAME)
 #   -Force                                                 Force re-run even if already on target version
@@ -39,10 +39,10 @@ if ($ZabbixServer -notmatch $AddrPattern) {
     Write-Error "ZabbixServer contains invalid characters: $ZabbixServer"; exit 1
 }
 if ($ZabbixVersion -notmatch $VersionPattern) {
-    Write-Error "ZabbixVersion must be in x.y.z format (e.g. 7.4.0), got: $ZabbixVersion"; exit 1
+    Write-Error "ZabbixVersion must be in x.y.z format (e.g. 7.4.13), got: $ZabbixVersion"; exit 1
 }
 
-# Derive major.minor (e.g. "7.4.0" -> "7.4") for use in the CDN URL path
+# Derive major.minor (e.g. "7.4.13" -> "7.4") for use in the CDN URL path
 $ZabbixMajorMinor = ($ZabbixVersion -split '\.' | Select-Object -First 2) -join '.'
 
 # --- Constants ---------------------------------------------------------------
