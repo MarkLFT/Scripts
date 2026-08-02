@@ -92,6 +92,37 @@ Then update this section to fully verified with the version it landed on.
   character class and rejected every valid id. Caught by testing the regex rather than eyeballing it; the
   pattern now lives in a variable.
 
+### New: `repair-rmm-zabbix-linux.sh` (branch `rmm-zabbix-repair-script`, stacked on the mesh branch)
+
+Requested 2026-08-02: a script to clean up or repair a client server with a partial RMM and partial Zabbix
+install. Diagnoses both stacks, repairs what is safely repairable, and can strip either back to nothing so a
+clean install can follow. It never installs an agent — the existing installers do that.
+
+Design decisions:
+
+- **`report` is the default and read-only**, exit 0 = healthy/absent, 1 = problems found, so it doubles as a
+  TacticalRMM check. Nothing is removed by accident.
+- Destructive actions back up all config to `/var/backups` first, **refuse to touch a stack that looks
+  healthy** unless `force` is passed, and refuse to run non-interactively without explicit `yes`. Interactive
+  runs require typing `REMOVE`. This is deliberate: a scheduled run that drifts onto a healthy host must not
+  wipe a working agent.
+- `clean-zabbix` leaves the apt repo (a reinstall needs it); `clean-trmm` leaves `/usr/local/go`.
+- Uses `set -uo pipefail` (not `-e`) with explicit `|| die` / `|| warn` throughout, matching the TRMM installer
+  and updater — a probe returning non-zero on a broken host is normal input, not a failure.
+
+Key detection worth remembering: the classic Zabbix crash loop is a `plugins.d/*.conf` referencing a loadable
+plugin whose package is not installed. `repair` renames those to `.disabled` so the agent starts again.
+
+**Tested** in Debian 12 containers: 9 scenarios / 29 assertions, all passing — clean host, unregistered binary,
+missing systemd unit (and its repair), missing binary, build leftovers, empty mesh dir, Zabbix partial config
+(missing Server/ServerActive, placeholder creds, missing Include, and the repair of it), destructive-action
+refusal + backup + removal, and rejection of an unknown action. The healthy-stack guard was verified separately
+(5/5 cases): `yes` will not remove a healthy stack, only `force` will. Container has systemd installed but not
+booted, which also confirmed the script degrades sanely when `systemctl` cannot work.
+
+**Not yet exercised on a real host:** anything requiring a live systemd — service restart paths and the
+`healthy` state itself.
+
 ### Repo-wide audit (folded into this branch/PR at Mark's request)
 
 Requested mid-session; originally staged on a separate `repo-url-doc-fixes` branch, then cherry-picked here so
