@@ -5,9 +5,9 @@
 # Prompts for all sensitive values — safe for public hosting.
 #
 # Usage (run as Administrator):
-#   Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-windows.ps1 `
-#     -OutFile "$env:TEMP\install-trmm-agent-windows.ps1"
-#   & "$env:TEMP\install-trmm-agent-windows.ps1"
+#   Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-tacticalrmm-agent-windows.ps1 `
+#     -OutFile "$env:TEMP\install-tacticalrmm-agent-windows.ps1"
+#   & "$env:TEMP\install-tacticalrmm-agent-windows.ps1"
 # =============================================================================
 
 $ErrorActionPreference = "Stop"

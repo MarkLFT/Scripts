@@ -57,10 +57,12 @@ Sends a Discord notification on install or upgrade.
 | `ZabbixProxy`          | Site   | `10.10.1.5`                            |
 | `ZabbixServer`         | Site   | `10.10.0.10`                           |
 | `DiscordWebhook`       | Global | `https://discord.com/api/webhooks/...` |
-| `ZabbixVersion`        | Global | `7.4` (Linux) / `7.4.0` (Windows)      |
+| `ZabbixVersion`        | Global | `7.4` (Linux) / `7.4.13` (Windows)     |
 | `ZabbixMSSQLPassword`  | Global | Password for the `zabbix` SQL login    |
 | `MSSQLSAPassword`      | Site   | SA password (Linux only)               |
 | `ZabbixHostName`       | Agent  | Custom Zabbix hostname (optional)      |
+
+> **`ZabbixVersion` differs by platform.** Linux takes **major.minor** (`7.4`) — it selects the apt repository, and apt then installs the newest patch release. Windows takes a **full x.y.z** version because it downloads that exact MSI from the Zabbix CDN, so it must be a patch release that actually exists — check [cdn.zabbix.com/zabbix/binaries/stable](https://cdn.zabbix.com/zabbix/binaries/stable/). Note there is no `7.4.0` MSI published; the value must be a real release such as `7.4.13`, or the download fails.
 
 #### Linux Agent
 
@@ -94,7 +96,7 @@ Manual use — download first then run:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-zabbix-agent-windows-tactical-rmm.ps1 -OutFile "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1"
-& "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1" -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.0" -ZabbixMSSQLPassword "ZabbixMSSQLPass!" -ZabbixHostName "My SQL Server"
+& "$env:TEMP\install-zabbix-agent-windows-tactical-rmm.ps1" -ZabbixProxy "10.10.1.5" -ZabbixServer "10.10.0.10" -DiscordWebhook "https://discord.com/api/webhooks/..." -ZabbixVersion "7.4.13" -ZabbixMSSQLPassword "ZabbixMSSQLPass!" -ZabbixHostName "My SQL Server"
 ```
 
 Force reconfigure (skips MSI download/install, rewrites all configs and recreates SQL logins):
