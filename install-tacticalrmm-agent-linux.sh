@@ -21,8 +21,8 @@
 #             → Manual → copy the value shown after --auth
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-trmm-agent-linux.sh \
-#     -o /tmp/install-trmm-agent-linux.sh && sudo bash /tmp/install-trmm-agent-linux.sh
+#   curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-tacticalrmm-agent-linux.sh \
+#     -o /tmp/install-tacticalrmm-agent-linux.sh && sudo bash /tmp/install-tacticalrmm-agent-linux.sh
 # =============================================================================
 
 set -uo pipefail
@@ -52,7 +52,7 @@ log_warn()  { echo -e "  ${YELLOW}⚠${RESET}  $1"; }
 die()       { echo -e "\n  ${RED}✖  $1${RESET}" >&2; exit 1; }
 
 # --- Must run as root --------------------------------------------------------
-[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install-trmm-agent-linux.sh"
+[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install-tacticalrmm-agent-linux.sh"
 
 # --- OS check ----------------------------------------------------------------
 [[ -f /etc/os-release ]] || die "Cannot detect OS"
