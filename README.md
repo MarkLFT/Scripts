@@ -263,6 +263,53 @@ Invoke-WebRequest https://raw.githubusercontent.com/MarkLFT/Scripts/main/install
 
 ---
 
+## Repair & Cleanup
+
+### RMM / Zabbix Repair (Linux)
+
+`repair-rmm-zabbix-linux.sh` diagnoses and repairs a client server left half-installed by an interrupted or failed TacticalRMM agent or Zabbix Agent 2 install, and can strip either stack back to nothing so a clean install can follow. It never installs either agent — use the dedicated installers for that.
+
+**Actions:**
+
+| Action | What it does |
+| ------ | ------------ |
+| `report` | Read-only diagnosis (**default**). Exit `0` = healthy or absent, `1` = problems found — so it works as a TacticalRMM check |
+| `repair` | Fixes what can be fixed safely, then re-reports |
+| `clean-trmm` | Removes all TacticalRMM agent components (including MeshCentral) |
+| `clean-zabbix` | Removes all Zabbix Agent 2 components |
+| `clean-all` | Both |
+
+**What it detects.** For the RMM agent: binary present but never registered, config present with the binary missing, a missing or orphaned systemd unit, a failed service, an empty `/opt/tacticalmesh` left by a failed mesh install, and stale build leftovers in `/tmp`. For Zabbix: a half-installed package, a broken dpkg state, the legacy v1 `zabbix-agent` sitting alongside Agent 2 (they fight over port 10050), a config missing `Server=`/`ServerActive=`/`Hostname=`, a missing `plugins.d` Include, `CHANGE_ME` placeholder credentials, the apt repo added without the agent, and — the classic crash loop — **plugin configs referencing a loadable plugin whose package is not installed**.
+
+**What `repair` fixes automatically:** reconciles a broken dpkg state, recreates the missing `tacticalagent` systemd unit, starts services that should be running, disables orphaned plugin configs that crash the agent, adds the missing `plugins.d` Include, and clears stale build leftovers. Anything it cannot fix safely is reported with a suggested next step.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/repair-rmm-zabbix-linux.sh \
+  -o /tmp/repair-rmm-zabbix-linux.sh && sudo bash /tmp/repair-rmm-zabbix-linux.sh
+```
+
+Run with no arguments it prompts for the action. Via TacticalRMM, pass them positionally:
+
+```bash
+# Diagnosis only — usable as a scheduled check (exit 1 = problems found)
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/repair-rmm-zabbix-linux.sh | sudo bash -s -- "report" "{{global.DiscordWebhook}}"
+
+# Repair
+curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/repair-rmm-zabbix-linux.sh | sudo bash -s -- "repair" "{{global.DiscordWebhook}}" "yes"
+```
+
+| Argument | Purpose |
+| -------- | ------- |
+| `$1` | Action — `report` (default), `repair`, `clean-trmm`, `clean-zabbix`, `clean-all` |
+| `$2` | Discord webhook URL (optional) |
+| `$3` | `yes` to confirm a destructive action non-interactively; `force` to also allow cleaning a stack that looks healthy |
+
+> **Safety.** `report` is the default and is read-only, so nothing is removed by accident. Every destructive action writes a timestamped configuration backup to `/var/backups` first. A `clean-*` action **refuses to touch a stack that looks healthy** unless `force` is given, so a stray scheduled run cannot wipe a working agent — and a non-interactive run with no confirmation is refused outright. Interactively it requires typing `REMOVE`.
+>
+> `clean-zabbix` deliberately leaves the Zabbix apt repository configured, since a reinstall needs it. `clean-trmm` leaves the Go toolchain at `/usr/local/go` in place.
+
+---
+
 ## SQL Server
 
 ### SQL Server on Linux (Ubuntu 24.04) — Server Setup
