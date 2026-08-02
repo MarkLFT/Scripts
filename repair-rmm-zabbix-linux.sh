@@ -346,22 +346,27 @@ diagnose_zabbix() {
         [[ $has_pkg -eq 1 ]] && finding "zabbix" "broken" "package installed but $ZBX_CONF is missing"
     fi
 
-    # --- Plugin configs pointing at plugins that are not installed ----------
+    # --- Plugin configs pointing at a binary that is not there --------------
     # This is the classic crash loop: the agent loads plugins.d/*.conf and dies
-    # when the referenced loadable plugin binary is absent.
+    # when the referenced loadable plugin binary is absent, e.g.
+    #   plugin "EmberPlus": fork/exec /usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus:
+    #   no such file or directory
+    # Check the System.Path binary rather than deriving a package name from the
+    # config filename: the two do not match for every plugin (ember.conf ships
+    # in zabbix-agent2-plugin-ember-plus, nvidia.conf in ...-nvidia-gpu), and a
+    # name-based guess misses exactly the plugins that break hosts in practice.
+    # It also catches a config left behind by an incomplete purge, where the
+    # package is gone from dpkg but its conffile survived.
     if [[ -d "$ZBX_PLUGINS_D" ]]; then
         local orphans=0 placeholders=0
         while IFS= read -r conf; do
             [[ -e "$conf" ]] || continue
-            local base pkg
+            local base plugin_bin
             base=$(basename "$conf" .conf)
-            pkg="zabbix-agent2-plugin-${base}"
-            if ! pkg_installed "$pkg"; then
-                # Only flag plugins that ship as separate packages.
-                if apt-cache show "$pkg" >/dev/null 2>&1; then
-                    log_bad "Plugin config ${base}.conf present but $pkg is not installed"
-                    orphans=$((orphans+1))
-                fi
+            plugin_bin=$(sed -n 's/^[[:space:]]*Plugins\..*\.System\.Path=//p' "$conf" 2>/dev/null | head -1)
+            if [[ -n "$plugin_bin" && ! -x "$plugin_bin" ]]; then
+                log_bad "Plugin config ${base}.conf points at a missing binary: ${plugin_bin}"
+                orphans=$((orphans+1))
             fi
             if grep -q 'CHANGE_ME' "$conf" 2>/dev/null; then
                 log_warn "Plugin config ${base}.conf still has placeholder credentials"
@@ -423,6 +428,10 @@ backup_configs() {
     for p in "$RMM_CONF" "$RMM_UNIT" "$ZBX_CONF" "$ZBX_CONF_D"; do
         [[ -e "$p" ]] && paths+=("$p")
     done
+    # Back up the whole of /etc/zabbix when it exists, not just the agent's own
+    # files: a co-installed proxy or server keeps its config in the same
+    # directory, and a backup that omits it cannot undo a mistake made there.
+    [[ -d /etc/zabbix ]] && paths+=(/etc/zabbix)
     [[ -e "/etc/systemd/system/${ZBX_SVC}.service" ]] && paths+=("/etc/systemd/system/${ZBX_SVC}.service")
 
     if [[ ${#paths[@]} -eq 0 ]]; then
@@ -519,21 +528,37 @@ do_repair() {
     [[ $removed -gt 0 ]] && { repaired "cleared ${removed} stale build leftover(s) from /tmp"; acted=1; }
 
     # --- Zabbix --------------------------------------------------------------
-    # Disable plugin configs whose plugin package is missing — this is what puts
-    # the agent into a crash loop after a partial install.
+    # Disable plugin configs whose binary is missing — this is what puts the
+    # agent into a crash loop, and it survives an interrupted purge (the package
+    # is gone from dpkg but its conffile is left behind).
     if [[ -d "$ZBX_PLUGINS_D" ]]; then
         local disabled=0
         while IFS= read -r conf; do
             [[ -e "$conf" ]] || continue
-            local base pkg
+            local base plugin_bin
             base=$(basename "$conf" .conf)
-            pkg="zabbix-agent2-plugin-${base}"
-            if ! pkg_installed "$pkg" && apt-cache show "$pkg" >/dev/null 2>&1; then
+            plugin_bin=$(sed -n 's/^[[:space:]]*Plugins\..*\.System\.Path=//p' "$conf" 2>/dev/null | head -1)
+            if [[ -n "$plugin_bin" && ! -x "$plugin_bin" ]]; then
                 mv "$conf" "${conf}.disabled" 2>/dev/null \
-                    && { log_info "Disabled ${base}.conf (plugin $pkg not installed)"; disabled=$((disabled+1)); }
+                    && { log_info "Disabled ${base}.conf (missing binary ${plugin_bin})"; disabled=$((disabled+1)); }
             fi
         done < <(find "$ZBX_PLUGINS_D" -maxdepth 1 -name '*.conf' 2>/dev/null)
         [[ $disabled -gt 0 ]] && { repaired "disabled ${disabled} orphaned plugin config(s)"; acted=1; }
+    fi
+
+    # Config files left behind by packages that were removed but never purged.
+    # dpkg leaves these in "rc" state; the agent still reads them and dies on the
+    # missing binary, and `dpkg --configure -a` can never succeed while it does.
+    local rc_plugins
+    rc_plugins=$(dpkg -l 2>/dev/null | awk '/^rc[[:space:]]+zabbix-agent2-plugin/{print $2}')
+    if [[ -n "$rc_plugins" ]]; then
+        log_info "Purging leftover config from removed plugin packages: $(echo "$rc_plugins" | tr '\n' ' ')"
+        # shellcheck disable=SC2086  # deliberate word splitting: list of package names
+        if dpkg --purge $rc_plugins >/dev/null 2>&1; then
+            repaired "purged leftover config for $(echo "$rc_plugins" | wc -l) removed plugin package(s)"; acted=1
+        else
+            log_warn "Could not purge leftover plugin config — remove the stale files under ${ZBX_PLUGINS_D} manually"
+        fi
     fi
 
     # Missing Include for plugins.d
@@ -627,10 +652,25 @@ clean_zabbix() {
         log_info "No Zabbix agent packages installed"
     fi
 
-    rm -rf "$ZBX_CONF" "$ZBX_CONF_D" /etc/zabbix
+    # Remove ONLY agent-owned paths. /etc/zabbix is shared with zabbix-proxy and
+    # zabbix-server: an earlier version of this script did `rm -rf /etc/zabbix`
+    # here and destroyed a running proxy's configuration on a host where the
+    # proxy and the agent are co-installed. Never touch the directory itself.
+    rm -rf "$ZBX_CONF" "$ZBX_CONF_D"
     rm -f "/etc/systemd/system/${ZBX_SVC}.service"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    log_ok "Removed Zabbix configuration"
+    log_ok "Removed Zabbix agent configuration"
+
+    # Report anything else living in /etc/zabbix so it is obvious we left it.
+    local other_conf
+    other_conf=$(find /etc/zabbix -maxdepth 1 -name 'zabbix_*' ! -name 'zabbix_agent2*' 2>/dev/null)
+    if [[ -n "$other_conf" ]]; then
+        log_info "Left other Zabbix components untouched:"
+        while IFS= read -r f; do [[ -n "$f" ]] && echo "        $f"; done <<< "$other_conf"
+    else
+        # Only remove the directory when nothing else owns anything in it.
+        rmdir /etc/zabbix 2>/dev/null && log_info "Removed the now-empty /etc/zabbix"
+    fi
 
     # The apt repo is left in place deliberately — a reinstall needs it, and
     # removing it would force the installer to re-add and re-key the repo.

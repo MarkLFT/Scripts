@@ -74,14 +74,29 @@ carry the same pin and must be re-pinned together.
 - Guard unit tests (8/8) against the shipped `patch_community_script`: applies at exactly 1 match, aborts at
   0 matches (re-patch) and at 2 matches (ambiguous).
 
-**Still outstanding — needs the real Debian host** (nothing below can be done off-host):
+**VERIFIED ON A LIVE HOST (2026-08-02)** — full interactive run against `rmm-api.resort-manager.com`,
+registered to client Komune / site Hotel as a server:
 
-1. Registration against the live TRMM server and the systemd unit (`systemctl status tacticalagent` active).
-2. Agent appears in TRMM under the right client/site/type.
-3. Web terminal connects from the TRMM UI — if not, check the **Use Terminal** role permission first.
-4. `update-tacticalrmm-agent-linux.sh` rebuilds and restarts cleanly on the same host with the pinned script.
+- Pinned build script downloaded, **SHA-256 matched**, both dispatcher patches reported applied.
+- Source pre-fetch used (920K), 2 community download lines neutralised, compile succeeded.
+- `Installation was successful!` — registration completed against the live server.
+- `tacticalagent` service running; **agent version 2.11.0**.
+- `No mesh agent present — registering without a mesh node id` — the no-mesh path works as designed.
 
-Then update this section to fully verified with the version it landed on.
+**Still outstanding (UI-side only):**
+
+1. Confirm the agent shows in the TRMM UI under Komune / Hotel with type server.
+2. Web terminal connects from the TRMM UI — if not, check the **Use Terminal** role permission first.
+3. `update-tacticalrmm-agent-linux.sh` rebuilds and restarts cleanly on the same host with the pinned script.
+
+**Two benign messages seen during the live run — neither is a script fault:**
+
+- `shell-init / job-working-directory: error retrieving current directory: getcwd: ...` on every fork. The
+  operator's shell was sitting in a deleted directory *before* the script started (the first one appears ahead
+  of the script banner). Reproduced in a container: a deleted cwd emits this on every subshell while the script
+  itself runs fine. Our scripts never `cd`, so they cannot cause it. Fix: `cd ~` or open a new shell.
+- `WARNING: Unable to read board_serial: permission denied` — emitted by rmmagent itself while collecting
+  inventory on a host with restricted `/sys/class/dmi/id`. One inventory field is missing; nothing else.
 
 ### Bugs caught while building this (both fixed)
 
@@ -141,6 +156,34 @@ scripts parse; Zabbix Linux repo URL patterns and the Windows MSI pattern resolv
 check is present. Non-issues: `PROXY_MODE`/`DB_TYPE` in `install-zabbix-proxy.sh` are vestigial constants
 documenting hardcoded choices (the config writes `ProxyMode=0` literally) — cosmetic only; SC2076 in
 `migrate-ufw-to-iptables.sh` is a literal substring match, which is the intended behaviour.
+
+### Zabbix orphaned plugin config — real-world case that broke my detection (2026-08-02)
+
+A live host (KomuneProxy, Debian 13) got stuck in a dpkg loop: `zabbix-agent2` could never configure because
+`ExecStartPre` runs `zabbix_agent2 -T`, which died with
+
+    plugin "EmberPlus": fork/exec /usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus: no such file or directory
+
+The plugin package had been removed but its `plugins.d/ember.conf` survived, so the agent kept trying to launch a
+binary that was gone. Reproduced byte-for-byte in a container (`dpkg --remove` leaves the conffile; purging it
+restores `Validation successful`).
+
+**This exposed a bug in `repair-rmm-zabbix-linux.sh`**: it derived the package name from the config filename, but
+the three names differ per plugin —
+
+| config | package | binary |
+| --- | --- | --- |
+| `ember.conf` | `zabbix-agent2-plugin-ember-plus` | `/usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus` |
+| `nvidia.conf` | `zabbix-agent2-plugin-nvidia-gpu` | `/usr/libexec/zabbix/zabbix-agent2-plugin-nvidia-gpu` |
+
+so it missed exactly the two plugins that break hosts in practice. Detection now checks whether the `System.Path=`
+binary is executable — name-independent, and it also catches a config dpkg no longer tracks. Repair additionally
+purges `rc`-state plugin packages (guarded against an empty list). Verified 6/6 against a container staged in the
+host's state.
+
+Worth remembering: the failure is self-perpetuating — `dpkg --configure -a` re-runs the same config test, so the
+host cannot recover on its own; and the file-level fix is required because on the live host there were **no**
+`rc`-state packages at all, only an untracked leftover config.
 
 ## Completed
 
