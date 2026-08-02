@@ -184,6 +184,34 @@ check is present. Non-issues: `PROXY_MODE`/`DB_TYPE` in `install-zabbix-proxy.sh
 documenting hardcoded choices (the config writes `ProxyMode=0` literally) — cosmetic only; SC2076 in
 `migrate-ufw-to-iptables.sh` is a literal substring match, which is the intended behaviour.
 
+### Zabbix orphaned plugin config — real-world case that broke my detection (2026-08-02)
+
+A live host (KomuneProxy, Debian 13) got stuck in a dpkg loop: `zabbix-agent2` could never configure because
+`ExecStartPre` runs `zabbix_agent2 -T`, which died with
+
+    plugin "EmberPlus": fork/exec /usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus: no such file or directory
+
+The plugin package had been removed but its `plugins.d/ember.conf` survived, so the agent kept trying to launch a
+binary that was gone. Reproduced byte-for-byte in a container (`dpkg --remove` leaves the conffile; purging it
+restores `Validation successful`).
+
+**This exposed a bug in `repair-rmm-zabbix-linux.sh`**: it derived the package name from the config filename, but
+the three names differ per plugin —
+
+| config | package | binary |
+| --- | --- | --- |
+| `ember.conf` | `zabbix-agent2-plugin-ember-plus` | `/usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus` |
+| `nvidia.conf` | `zabbix-agent2-plugin-nvidia-gpu` | `/usr/libexec/zabbix/zabbix-agent2-plugin-nvidia-gpu` |
+
+so it missed exactly the two plugins that break hosts in practice. Detection now checks whether the `System.Path=`
+binary is executable — name-independent, and it also catches a config dpkg no longer tracks. Repair additionally
+purges `rc`-state plugin packages (guarded against an empty list). Verified 6/6 against a container staged in the
+host's state.
+
+Worth remembering: the failure is self-perpetuating — `dpkg --configure -a` re-runs the same config test, so the
+host cannot recover on its own; and the file-level fix is required because on the live host there were **no**
+`rc`-state packages at all, only an untracked leftover config.
+
 ## Completed
 
 - 2026-08-19: **Fixed TRMM Linux agent install failing with exit 8 on a new Debian 13 cloud server.** Root cause: the pinned community script's `go_install()` downloads the Go toolchain with a single unretried `wget -q ... https://go.dev/dl/go1.26.1.linux-amd64.tar.gz` under `set -euo pipefail`. go.dev 302-redirects to dl.google.com; that request returned an HTTP error from the new host, wget exited 8, the community script's EXIT trap printed "Cleaning up temporary files..." and the run aborted before compiling. `-q` suppresses wget's error message as well as its output, which is why the failure showed as a bare exit code with no cause. **This is the identical failure mode already fixed for the agent *source* tarball on 2026-06-29 (commit 1a846c6) — the Go download one step earlier was left unhardened.** Verified from upstream source, not assumed: the tarball itself is fine (HTTP 200, 66.8 MB), and `go_install()` is guarded by `command -v go`, so pre-installing Go skips its download entirely. Fix: added `ensure_go()` to **both** `install-tacticalrmm-agent-linux.sh` and `update-tacticalrmm-agent-linux.sh` — no-op if Go is present; otherwise reads the version from the checksum-verified community script (so the two cannot drift), fetches with 5 attempts and backoff, extracts to `/usr/local/go`, and symlinks `/usr/local/bin/go` (that dir is on sudo's `secure_path`, so it survives the stripped environment of the systemd-run bootstrap, where the community script's `/etc/profile` export would not be read). Falls back to the distro `golang-go` package — legitimate, since rmmagent's `go.mod` requires only go 1.20 and Debian 12/13 + Ubuntu 22.04/24.04 all package newer — and only then dies, with the diagnostic wget command in the message. Tested: short-circuit path, version parse against the pin (1.26.1), URL resolution, and the full retry → apt fallback → die chain. `bash -n` clean on both. **Confirmed working on the Debian 13 host 2026-08-19** — the install that previously died at exit 8 now completes end-to-end.
