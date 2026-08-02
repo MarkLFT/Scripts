@@ -74,14 +74,29 @@ carry the same pin and must be re-pinned together.
 - Guard unit tests (8/8) against the shipped `patch_community_script`: applies at exactly 1 match, aborts at
   0 matches (re-patch) and at 2 matches (ambiguous).
 
-**Still outstanding — needs the real Debian host** (nothing below can be done off-host):
+**VERIFIED ON A LIVE HOST (2026-08-02)** — full interactive run against `rmm-api.resort-manager.com`,
+registered to client Komune / site Hotel as a server:
 
-1. Registration against the live TRMM server and the systemd unit (`systemctl status tacticalagent` active).
-2. Agent appears in TRMM under the right client/site/type.
-3. Web terminal connects from the TRMM UI — if not, check the **Use Terminal** role permission first.
-4. `update-tacticalrmm-agent-linux.sh` rebuilds and restarts cleanly on the same host with the pinned script.
+- Pinned build script downloaded, **SHA-256 matched**, both dispatcher patches reported applied.
+- Source pre-fetch used (920K), 2 community download lines neutralised, compile succeeded.
+- `Installation was successful!` — registration completed against the live server.
+- `tacticalagent` service running; **agent version 2.11.0**.
+- `No mesh agent present — registering without a mesh node id` — the no-mesh path works as designed.
 
-Then update this section to fully verified with the version it landed on.
+**Still outstanding (UI-side only):**
+
+1. Confirm the agent shows in the TRMM UI under Komune / Hotel with type server.
+2. Web terminal connects from the TRMM UI — if not, check the **Use Terminal** role permission first.
+3. `update-tacticalrmm-agent-linux.sh` rebuilds and restarts cleanly on the same host with the pinned script.
+
+**Two benign messages seen during the live run — neither is a script fault:**
+
+- `shell-init / job-working-directory: error retrieving current directory: getcwd: ...` on every fork. The
+  operator's shell was sitting in a deleted directory *before* the script started (the first one appears ahead
+  of the script banner). Reproduced in a container: a deleted cwd emits this on every subshell while the script
+  itself runs fine. Our scripts never `cd`, so they cannot cause it. Fix: `cd ~` or open a new shell.
+- `WARNING: Unable to read board_serial: permission denied` — emitted by rmmagent itself while collecting
+  inventory on a host with restricted `/sys/class/dmi/id`. One inventory field is missing; nothing else.
 
 ### Bugs caught while building this (both fixed)
 
