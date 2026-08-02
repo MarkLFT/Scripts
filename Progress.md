@@ -4,7 +4,72 @@ Track of current and recent work for session continuity.
 
 ## Current Work
 
-No active tasks.
+**Branch `trmm-linux-no-mesh` — drop MeshCentral from the TRMM Linux agent installer, pin the community script.** Code complete; **UNTESTED on a host** (see Blockers).
+
+### Root cause (2026-08-02)
+
+`install-tacticalrmm-agent-linux.sh` was run on a new Debian server and the meshagent did not install.
+MeshCentral's `meshinstall.sh` takes `[serverUrl] [deviceGroupId]`; the script passed the server URL only, so it bailed out.
+The failure was invisible because the call ended in `>/dev/null 2>&1 || true` and the follow-up check only logged
+"status unclear — continuing anyway".
+
+### Decisions
+
+1. **Drop mesh entirely** rather than plumb the device group ID through. TRMM v1.5.0 (15 Jun 2026) added a
+   **native web terminal with no MeshCentral dependency** (requires agent 2.11.0+). Take Control and File Browser
+   still need mesh — accepted trade for headless servers. Verified against the v1.5.0 release notes.
+2. No mesh URL prompt; the `core/settings/` call for `mesh_site` / `mesh_token` is removed.
+3. No silent failures — the `|| true` swallowing is gone; every step is fatal with output.
+4. **Pin the community build script to a commit** and verify SHA-256 before executing.
+5. Pass `--meshnodeid` only when `/opt/tacticalmesh/meshagent` exists.
+6. No Zabbix changes (8.0 still beta; nothing here requires touching them).
+
+### The pin
+
+```text
+repo:   Nerdy-Technician/LinuxRMM-Script
+commit: 8da32b054a39292a114689730dd72540b1b8432c
+sha256: d0558e5d2fc8c1a9ca700845296315cdf5081925acbdaf9e84e24f1e8b9fb3cc
+```
+
+Verified 2026-08-02: this commit is current `refs/heads/main` HEAD and the checksum matches. Both scripts
+carry the same pin and must be re-pinned together.
+
+### Upstream facts verified from source (not assumed)
+
+- `rmmagent` **does** accept `-meshnodeid` (`main.go:53`) and `-m nixmeshnodeid` (`main.go:90`).
+- The current official `agent_linux.sh` no longer sets `--meshnodeid` — the handover brief was out of date on
+  this point. Harmless: it is still a supported flag, and `SyncMeshNodeID` re-syncs it periodically in svc mode.
+- On Linux the agent **never** self-installs mesh (`agent/install.go:161` — `!i.NoMesh && runtime.GOOS != "linux"`),
+  so `-nomesh` is unnecessary and omitting `--meshnodeid` registers cleanly with an empty `mesh_node_id`.
+- `NixMeshNodeID()` returns `""` safely when `/opt/tacticalmesh/meshagent` is absent (`agent_unix.go:398`).
+- **`install -m 0755` does not fail with ETXTBSY over a running binary** (it unlinks first) — verified empirically;
+  only `cp` fails. So the old agent does not need removing before the build writes the new binary, and removal
+  now happens after every network step, immediately before registration.
+
+### Changes made
+
+- `install-tacticalrmm-agent-linux.sh` — mesh install block and `core/settings/` call removed; community script
+  pinned + checksum-verified; used as a **build step only** via two verified dispatcher patches
+  (`install_mesh` → no-op, `install_agent` → `install -m 0755 /tmp/temp_rmmagent /usr/local/bin/rmmagent`),
+  each asserting exactly one match before and zero after; registration and the systemd unit moved into our
+  script; source pre-fetch with retry/backoff and `HOME`/`GOCACHE`/`GOPATH` pinning carried over from the updater;
+  run without `--simple` and `tee`d so failures print the tail.
+  Side benefit: the auth token and API URL are no longer passed to the third-party script at all.
+- `update-tacticalrmm-agent-linux.sh` — same pin and checksum; the source-download `sed` now reports whether it matched.
+- `README.md`, `CLAUDE.md` — kept in sync (see below).
+
+### Remaining
+
+1. Test on the new Debian server (full list in the PR body / handover).
+2. Update this file to **verified** with the agent version it landed on.
+3. Open the PR against `main`.
+
+### Blockers
+
+- **Cannot test from this session** — this session runs on WSL2 on Mark's workstation, not the target Debian
+  host, and the scripts require root plus a live TRMM server. `bash -n` and `shellcheck` are clean, but nothing
+  has been executed end to end. Treat as untested until step 1 above is done.
 
 ## Completed
 

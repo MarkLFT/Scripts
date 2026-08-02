@@ -6,13 +6,14 @@
 # Why this exists:
 #   The Linux community agent is compiled from source (amidaware/rmmagent),
 #   so the TacticalRMM server CANNOT auto-update it the way it updates the
-#   official signed Windows agent. The MeshCentral agent self-updates from the
-#   mesh server, but the rmmagent binary will silently drift behind the server
-#   version until it is manually rebuilt. This script rebuilds it.
+#   official signed Windows agent. The rmmagent binary will silently drift
+#   behind the server version until it is manually rebuilt. This script rebuilds
+#   it. (Where a MeshCentral agent has been added separately it self-updates
+#   from the mesh server and is left alone here.)
 #
 # What it does:
 #   1. Confirms the agent is installed and records the current version
-#   2. Downloads the community install/update script
+#   2. Downloads the pinned community script and verifies its SHA-256
 #   3. Runs its "update" mode — recompiles rmmagent from the latest amidaware
 #      source (via Go) and hot-swaps the binary (mesh agent and config untouched)
 #   4. Verifies the service is running and reports the version change
@@ -168,6 +169,19 @@ for pkg in curl wget tar; do
         apt-get install -y -q "$pkg" >/dev/null 2>&1 || die "Could not install $pkg"
     fi
 done
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found — cannot verify the community script"
+
+# --- Pinned community build script -------------------------------------------
+# Pinned to a commit and checksum-verified before execution rather than tracked
+# from a moving branch head. Re-pin with:
+#   git ls-remote https://github.com/Nerdy-Technician/LinuxRMM-Script.git refs/heads/main
+#   curl -fsSL https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/<commit>/rmmagent-linux.sh | sha256sum
+# Keep this in step with install-tacticalrmm-agent-linux.sh.
+COMMUNITY_REPO="Nerdy-Technician/LinuxRMM-Script"
+COMMUNITY_COMMIT="8da32b054a39292a114689730dd72540b1b8432c"
+COMMUNITY_SHA256="d0558e5d2fc8c1a9ca700845296315cdf5081925acbdaf9e84e24f1e8b9fb3cc"
+COMMUNITY_URL="https://raw.githubusercontent.com/${COMMUNITY_REPO}/${COMMUNITY_COMMIT}/rmmagent-linux.sh"
+
 # Ensure a Go installed under /usr/local/go is on PATH for non-login shells (cron)
 [[ -d /usr/local/go/bin ]] && export PATH="$PATH:/usr/local/go/bin"
 
@@ -191,11 +205,19 @@ print_section "Updating Agent"
 TMPDIR_WORK=$(mktemp -d /tmp/trmm-update-XXXXXX)
 trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
-log_info "Downloading community install/update script..."
+log_info "Downloading pinned community script (${COMMUNITY_COMMIT:0:12})..."
 COMMUNITY_SCRIPT="$TMPDIR_WORK/rmmagent-linux.sh"
-wget -q "https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/refs/heads/main/rmmagent-linux.sh" \
-    -O "$COMMUNITY_SCRIPT" 2>/dev/null \
-    || die "Could not download community script from GitHub"
+curl -fsSL "$COMMUNITY_URL" -o "$COMMUNITY_SCRIPT" \
+    || die "Could not download the pinned community script from GitHub"
+
+ACTUAL_SHA256=$(sha256sum "$COMMUNITY_SCRIPT" | awk '{print $1}')
+if [[ "$ACTUAL_SHA256" != "$COMMUNITY_SHA256" ]]; then
+    die "Community script checksum mismatch — refusing to execute.
+     Expected: $COMMUNITY_SHA256
+     Actual:   $ACTUAL_SHA256
+     Re-pin COMMUNITY_COMMIT/COMMUNITY_SHA256 after reviewing upstream changes."
+fi
+log_ok "Community script verified (SHA-256 matches pin)"
 chmod +x "$COMMUNITY_SCRIPT"
 
 # Source tarball that the community script compiles from. Its own download is a
@@ -229,8 +251,16 @@ if [[ "$SRC_OK" -eq 1 ]]; then
     # Replace any wget line in the community script that writes the tarball with a
     # no-op, so it compiles from the copy we just fetched. If this fails to match
     # (upstream changed), the community script simply downloads it as before — no
-    # worse than the current behaviour.
-    sed -i 's|^[[:space:]]*wget .*-O /tmp/rmmagent.tar.gz.*$|: # source pre-fetched by updater|' "$COMMUNITY_SCRIPT"
+    # worse than the current behaviour, but say so rather than falling through
+    # silently, since the retry hardening is then not actually in effect.
+    SRC_PATCH_RE='^[[:space:]]*wget .*-O /tmp/rmmagent\.tar\.gz.*$'
+    SRC_PATCH_MATCHES=$(grep -cE "$SRC_PATCH_RE" "$COMMUNITY_SCRIPT" 2>/dev/null || true)
+    if [[ "$SRC_PATCH_MATCHES" -gt 0 ]]; then
+        sed -i -E "s|${SRC_PATCH_RE}|: # source pre-fetched by updater|" "$COMMUNITY_SCRIPT"
+        log_ok "Using the pre-fetched source (${SRC_PATCH_MATCHES} download line(s) neutralised)"
+    else
+        log_warn "Could not neutralise the community source download — it will fetch the source itself"
+    fi
 else
     log_warn "Pre-fetch failed after retries — letting the community script fetch the source itself"
 fi

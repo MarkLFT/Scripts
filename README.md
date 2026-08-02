@@ -154,7 +154,6 @@ In the Zabbix frontend, assign the **MSSQL by Zabbix agent 2** template to the h
 
 Installs the TacticalRMM agent on a host and registers it with your TacticalRMM server.
 Connects to the TacticalRMM API to fetch available clients and sites so you can pick from a list — no need to look up IDs manually.
-Mesh URL and token are retrieved automatically from the API — no manual configuration of MeshCentral required.
 
 **Prompts for:** TacticalRMM API URL, API key, client (list), site (list), agent type (Server/Workstation).
 
@@ -163,11 +162,13 @@ Mesh URL and token are retrieved automatically from the API — no manual config
 
 #### Linux Agent (Ubuntu / Debian)
 
-Installs both the **MeshCentral agent** (required for Take Control / Remote Background) and the **TacticalRMM agent** (monitoring, scripts, tasks, patch management).
+Installs the **TacticalRMM agent** only — monitoring, scripts, tasks, patch management, and the native web terminal. **The MeshCentral agent is not installed** (see [MeshCentral on Linux](#meshcentral-on-linux) below).
 
-The Linux agent is built from source using the community install script originally created by [netvolt](https://github.com/netvolt/LinuxRMM-Script) and maintained by [Nerdy-Technician](https://github.com/Nerdy-Technician/LinuxRMM-Script). This compiles the agent from the official [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source code using Go. Compilation takes a few minutes on first run — this is normal.
+The agent binary is compiled from the official [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source using Go. The build is driven by the community script originally created by [netvolt](https://github.com/netvolt/LinuxRMM-Script) and maintained by [Nerdy-Technician](https://github.com/Nerdy-Technician/LinuxRMM-Script), which is **pinned to a specific commit and SHA-256 verified before it is executed** — a moving branch head is not fetched. It is used purely as a build step: its mesh install is patched out and its registration/service setup is replaced, so registration and the systemd unit are handled by this script and the auth token is never passed to third-party code. Each patch asserts it matched exactly once, and the install aborts if upstream has changed shape.
 
-> **Note:** This script targets the **community (free) licence**. The paid signed-agent installer from the TRMM UI is not required.
+Compilation takes a few minutes on first run — this is normal.
+
+> **Note:** This script targets the **community (free) licence**. Prebuilt Linux and macOS agents require a Tier 1 sponsorship (see [code signing](https://docs.tacticalrmm.com/code_signing/)), so compiling from source is the supported route here.
 >
 > **Auth Token (Linux only):** In TacticalRMM go to Agents → Install Agent → select Windows → Manual installation
 > → click Show Manual Instructions → copy the value after `--auth`.
@@ -178,21 +179,52 @@ curl -fsSL https://raw.githubusercontent.com/MarkLFT/Scripts/main/install-tactic
   -o /tmp/install-tacticalrmm-agent-linux.sh && sudo bash /tmp/install-tacticalrmm-agent-linux.sh
 ```
 
-After installation verify both services are running:
+After installation verify the service is running and check the version:
 
 ```bash
 systemctl status tacticalagent
-systemctl status meshagent
+/usr/local/bin/rmmagent -version
 ```
+
+##### MeshCentral on Linux
+
+This installer does not install the MeshCentral agent. Previously it tried to, but the install silently failed: MeshCentral's `meshinstall.sh` takes `[serverUrl] [deviceGroupId]` and only the server URL was being passed, so it bailed out — and the error was swallowed.
+
+Rather than plumb the device group ID through, mesh was dropped. As of **TRMM v1.5.0** the web terminal is fully native with **no MeshCentral dependency** (it requires agent **2.11.0+**), which covers day-to-day shell access on headless servers.
+
+**What still works without mesh:**
+
+- Monitoring, checks, tasks, scripts, patch management
+- The native web terminal (TRMM v1.5.0+, agent 2.11.0+)
+
+**What does not:**
+
+- **Take Control** (remote desktop) and **File Browser** — both still MeshCentral-backed. They are slated to be reimplemented natively in future releases, the terminal being the first of the three to land.
+
+> **Terminal access is a separate role permission.** It moved from *Use MeshCentral* to **Role → Agents → Use Terminal**. If the terminal will not connect, check this before suspecting the agent.
+
+**To add MeshCentral back on a host that needs Take Control or File Browser:**
+
+1. In MeshCentral, open the device group → **Add Agent** → **Installation Executable** for Linux/BSD/macOS. The URL it gives you contains `?id=<deviceGroupId>` — the server URL on its own is not enough, which is exactly what caused the original failure.
+2. Run that installer on the host.
+3. Re-run `install-tacticalrmm-agent-linux.sh`. It detects `/opt/tacticalmesh/meshagent`, reads the node id with `rmmagent -m nixmeshnodeid`, and links it to the agent record with `--meshnodeid`. If no mesh agent is present it simply says so and registers without it.
+
+##### Re-pinning the community script
+
+Both `install-tacticalrmm-agent-linux.sh` and `update-tacticalrmm-agent-linux.sh` pin the same commit and checksum. To move the pin, get the current head and its checksum:
+
+```bash
+git ls-remote https://github.com/Nerdy-Technician/LinuxRMM-Script.git refs/heads/main
+curl -fsSL https://raw.githubusercontent.com/Nerdy-Technician/LinuxRMM-Script/<commit>/rmmagent-linux.sh | sha256sum
+```
+
+Review the upstream diff first, then update `COMMUNITY_COMMIT` and `COMMUNITY_SHA256` in **both** scripts — they must stay in step. A checksum mismatch, or a dispatcher patch that no longer matches exactly once, aborts the run before anything is executed.
 
 ##### Updating the Linux agent
 
-Because the Linux agent is **compiled from source** (community edition), the TacticalRMM server cannot push agent updates to it the way it does for the official signed Windows agent. The two components behave differently:
+Because the Linux agent is **compiled from source** (community edition), the TacticalRMM server cannot push agent updates to it the way it does for the official signed Windows agent. The `rmmagent` binary never updates on its own — it will silently drift behind the server version until it is rebuilt. (Where a MeshCentral agent has been added separately, that component self-updates from the mesh server; nothing to do for it.)
 
-- **MeshCentral agent** — self-updates from the mesh server automatically. Nothing to do.
-- **rmmagent binary** — never updates on its own. It will silently drift behind the server version until it is rebuilt.
-
-`update-tacticalrmm-agent-linux.sh` rebuilds the agent: it records the current version, recompiles `rmmagent` from the latest [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source via the community script's `update` mode, hot-swaps the binary, and verifies the service. The mesh agent and all configuration are left untouched. It is non-interactive and safe to re-run.
+`update-tacticalrmm-agent-linux.sh` rebuilds the agent: it records the current version, recompiles `rmmagent` from the latest [amidaware/rmmagent](https://github.com/amidaware/rmmagent) source via the pinned community script's `update` mode, hot-swaps the binary, and verifies the service. All agent configuration is left untouched, as is any mesh agent. It is non-interactive and safe to re-run.
 
 **Manual / SSH (interactive):**
 
