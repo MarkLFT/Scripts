@@ -92,9 +92,10 @@ Then update this section to fully verified with the version it landed on.
   character class and rejected every valid id. Caught by testing the regex rather than eyeballing it; the
   pattern now lives in a variable.
 
-### Side branch: `repo-url-doc-fixes` (off `main`, separate PR)
+### Repo-wide audit (folded into this branch/PR at Mark's request)
 
-Repo-wide audit requested mid-session. Everything below was verified against the live endpoints, not assumed:
+Requested mid-session; originally staged on a separate `repo-url-doc-fixes` branch, then cherry-picked here so
+there is one PR to review. Everything below was verified against the live endpoints, not assumed:
 
 - `install-tacticalrmm-agent-windows.ps1` header usage fetched `install-trmm-agent-windows.ps1` → **404**
   (the same class of bug as the Linux one fixed on the TRMM branch).
