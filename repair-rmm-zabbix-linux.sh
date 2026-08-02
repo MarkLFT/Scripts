@@ -428,6 +428,10 @@ backup_configs() {
     for p in "$RMM_CONF" "$RMM_UNIT" "$ZBX_CONF" "$ZBX_CONF_D"; do
         [[ -e "$p" ]] && paths+=("$p")
     done
+    # Back up the whole of /etc/zabbix when it exists, not just the agent's own
+    # files: a co-installed proxy or server keeps its config in the same
+    # directory, and a backup that omits it cannot undo a mistake made there.
+    [[ -d /etc/zabbix ]] && paths+=(/etc/zabbix)
     [[ -e "/etc/systemd/system/${ZBX_SVC}.service" ]] && paths+=("/etc/systemd/system/${ZBX_SVC}.service")
 
     if [[ ${#paths[@]} -eq 0 ]]; then
@@ -648,10 +652,25 @@ clean_zabbix() {
         log_info "No Zabbix agent packages installed"
     fi
 
-    rm -rf "$ZBX_CONF" "$ZBX_CONF_D" /etc/zabbix
+    # Remove ONLY agent-owned paths. /etc/zabbix is shared with zabbix-proxy and
+    # zabbix-server: an earlier version of this script did `rm -rf /etc/zabbix`
+    # here and destroyed a running proxy's configuration on a host where the
+    # proxy and the agent are co-installed. Never touch the directory itself.
+    rm -rf "$ZBX_CONF" "$ZBX_CONF_D"
     rm -f "/etc/systemd/system/${ZBX_SVC}.service"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    log_ok "Removed Zabbix configuration"
+    log_ok "Removed Zabbix agent configuration"
+
+    # Report anything else living in /etc/zabbix so it is obvious we left it.
+    local other_conf
+    other_conf=$(find /etc/zabbix -maxdepth 1 -name 'zabbix_*' ! -name 'zabbix_agent2*' 2>/dev/null)
+    if [[ -n "$other_conf" ]]; then
+        log_info "Left other Zabbix components untouched:"
+        while IFS= read -r f; do [[ -n "$f" ]] && echo "        $f"; done <<< "$other_conf"
+    else
+        # Only remove the directory when nothing else owns anything in it.
+        rmdir /etc/zabbix 2>/dev/null && log_info "Removed the now-empty /etc/zabbix"
+    fi
 
     # The apt repo is left in place deliberately — a reinstall needs it, and
     # removing it would force the installer to re-add and re-key the repo.
