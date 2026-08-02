@@ -178,9 +178,15 @@ ACTION=""
 
 if package_installed zabbix-agent2; then
     PREV_VERSION=$(dpkg -s zabbix-agent2 | grep '^Version:' | awk '{print $2}')
+    # Zabbix's Debian/Ubuntu packages carry an epoch, e.g. "1:7.4.13-1+debian13".
+    # Comparing that raw against "7.4" never matches, so the "already on target
+    # version" short-circuit below could never fire and every run — including
+    # every scheduled TacticalRMM run — re-entered the full install path.
+    # Strip the epoch before comparing.
+    PREV_VERSION_CMP="${PREV_VERSION#*:}"
     log "Installed version: $PREV_VERSION"
 
-    if [[ "$PREV_VERSION" == ${ZABBIX_VERSION}* ]]; then
+    if [[ "$PREV_VERSION_CMP" == ${ZABBIX_VERSION}.* || "$PREV_VERSION_CMP" == "${ZABBIX_VERSION}" ]]; then
         if [[ "$FORCE_RUN" == "force" ]]; then
             log "Already on version $ZABBIX_VERSION — force flag set, reconfiguring."
             ACTION="Reconfigured"
