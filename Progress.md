@@ -157,6 +157,34 @@ check is present. Non-issues: `PROXY_MODE`/`DB_TYPE` in `install-zabbix-proxy.sh
 documenting hardcoded choices (the config writes `ProxyMode=0` literally) — cosmetic only; SC2076 in
 `migrate-ufw-to-iptables.sh` is a literal substring match, which is the intended behaviour.
 
+### Zabbix orphaned plugin config — real-world case that broke my detection (2026-08-02)
+
+A live host (KomuneProxy, Debian 13) got stuck in a dpkg loop: `zabbix-agent2` could never configure because
+`ExecStartPre` runs `zabbix_agent2 -T`, which died with
+
+    plugin "EmberPlus": fork/exec /usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus: no such file or directory
+
+The plugin package had been removed but its `plugins.d/ember.conf` survived, so the agent kept trying to launch a
+binary that was gone. Reproduced byte-for-byte in a container (`dpkg --remove` leaves the conffile; purging it
+restores `Validation successful`).
+
+**This exposed a bug in `repair-rmm-zabbix-linux.sh`**: it derived the package name from the config filename, but
+the three names differ per plugin —
+
+| config | package | binary |
+| --- | --- | --- |
+| `ember.conf` | `zabbix-agent2-plugin-ember-plus` | `/usr/libexec/zabbix/zabbix-agent2-plugin-ember-plus` |
+| `nvidia.conf` | `zabbix-agent2-plugin-nvidia-gpu` | `/usr/libexec/zabbix/zabbix-agent2-plugin-nvidia-gpu` |
+
+so it missed exactly the two plugins that break hosts in practice. Detection now checks whether the `System.Path=`
+binary is executable — name-independent, and it also catches a config dpkg no longer tracks. Repair additionally
+purges `rc`-state plugin packages (guarded against an empty list). Verified 6/6 against a container staged in the
+host's state.
+
+Worth remembering: the failure is self-perpetuating — `dpkg --configure -a` re-runs the same config test, so the
+host cannot recover on its own; and the file-level fix is required because on the live host there were **no**
+`rc`-state packages at all, only an untracked leftover config.
+
 ## Completed
 
 - 2026-06-29: VERIFIED WORKING end-to-end on a live agent: 2.10.0 -> 2.11.0, service running. Committed the TRMM bootstrap as `trmm-self-update-bootstrap.sh`, updated README (manual vs TRMM-bootstrap usage, with the self-restart/cgroup explanation) and CLAUDE.md structure.
