@@ -144,6 +144,19 @@ documenting hardcoded choices (the config writes `ProxyMode=0` literally) — co
 
 ## Completed
 
+- 2026-08-02: Zabbix agent install died mid-`apt` on Debian 13 with the package left half-configured. **Root cause
+  proved by A/B in a container**: the install line used the `zabbix-agent2-plugin-*` wildcard, which pulls in
+  `zabbix-agent2-plugin-nvidia-gpu`; on a host with no NVIDIA driver the agent's own `-T` config test dies with
+  "NVML Shared Library couldn't be found or loaded". Agent alone → `Validation successful`; agent + wildcard →
+  exit 1. Since `ExecStartPre` runs that test, the postinst fails and dpkg is left half-configured. The script's
+  own "disable unneeded plugins" guard is written for exactly this but runs *after* the install, so on a fresh
+  install it can never fire. Fix on branch `zabbix-plugin-install-fix`: install the agent only and add loadable
+  plugins per detected service (postgresql joined mssql/redis); defer service starts during package operations
+  with a temporary `policy-rc.d` so no plugin can fail the package configure again; clear a pre-existing
+  half-configured state (this makes a re-run recover a stuck host); validate config before starting so failures
+  show the agent's message rather than a bare systemd exit code. Tested 10/10 in Debian 13 containers covering
+  fresh install, the nvidia reproduction, and recovery. Caught in my own change: the EXIT trap would have deleted
+  a *pre-existing* `policy-rc.d` — it now only removes the file it created.
 - 2026-06-29: VERIFIED WORKING end-to-end on a live agent: 2.10.0 -> 2.11.0, service running. Committed the TRMM bootstrap as `trmm-self-update-bootstrap.sh`, updated README (manual vs TRMM-bootstrap usage, with the self-restart/cgroup explanation) and CLAUDE.md structure.
 - 2026-06-29: Found the actual root cause of the exit-1 compile failure (after disproving download/rate-limit and Go-version theories via live diagnostics): the systemd-run transient unit used by the TRMM bootstrap runs with a stripped env and no HOME, so `go build` aborts instantly with "GOCACHE is not defined". Direct build with HOME set succeeds. Fix (commit f3a3612): pin HOME/GOCACHE/GOPATH before compile; drop `--simple` and capture output so real build errors are no longer hidden. go.mod requires go 1.20 (agent has 1.25.6 — version was never the issue).
 - 2026-06-29: Debugged fleet-wide TRMM Linux agent update failures. Root cause: community script downloads rmmagent source via single no-retry `wget -q` under `set -e`; transient HTTP error (429 when many agents hit codeload.github.com at once) → exit 8, instant abort, nothing compiled. Confirmed agents on 2.10.0, master=2.11.0 (real update pending), CGO_ENABLED=0 (no gcc needed — red herring). systemd-run detachment + bootstrap worked fine. Fix: pre-fetch source with retry+backoff + neutralise community wget, startup jitter (non-interactive), retry compile once. Commit 1a846c6.
