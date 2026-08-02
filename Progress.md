@@ -59,17 +59,56 @@ carry the same pin and must be re-pinned together.
 - `update-tacticalrmm-agent-linux.sh` — same pin and checksum; the source-download `sed` now reports whether it matched.
 - `README.md`, `CLAUDE.md` — kept in sync (see below).
 
-### Remaining
+### Testing status (2026-08-02)
 
-1. Test on the new Debian server (full list in the PR body / handover).
-2. Update this file to **verified** with the agent version it landed on.
-3. Open the PR against `main`.
+**Verified in a throwaway Debian 12 container** (the build phase needs no systemd, so it runs in full):
 
-### Blockers
+- `bash -n` and shellcheck 0.10.0 clean on both scripts (only the pre-existing benign SC1091).
+- Pinned script downloads, SHA-256 matches, **both dispatcher patches report applied** (1 match → 0), source
+  pre-fetch used, Go 1.26.1 installed, compile succeeded.
+- Binary lands at `/usr/local/bin/rmmagent`, reports **2.11.0** — the version the native terminal needs.
+- `/opt/tacticalmesh` does **not** exist and no meshagent binary is present. Mesh is genuinely gone.
+- **Negative test passes**: with `COMMUNITY_SHA256` corrupted the run aborts at the checksum, the pre-existing
+  agent binary is byte-for-byte untouched, Go is never installed and the source is never fetched — i.e. it
+  aborts before executing anything.
+- Guard unit tests (8/8) against the shipped `patch_community_script`: applies at exactly 1 match, aborts at
+  0 matches (re-patch) and at 2 matches (ambiguous).
 
-- **Cannot test from this session** — this session runs on WSL2 on Mark's workstation, not the target Debian
-  host, and the scripts require root plus a live TRMM server. `bash -n` and `shellcheck` are clean, but nothing
-  has been executed end to end. Treat as untested until step 1 above is done.
+**Still outstanding — needs the real Debian host** (nothing below can be done off-host):
+
+1. Registration against the live TRMM server and the systemd unit (`systemctl status tacticalagent` active).
+2. Agent appears in TRMM under the right client/site/type.
+3. Web terminal connects from the TRMM UI — if not, check the **Use Terminal** role permission first.
+4. `update-tacticalrmm-agent-linux.sh` rebuilds and restarts cleanly on the same host with the pinned script.
+
+Then update this section to fully verified with the version it landed on.
+
+### Bugs caught while building this (both fixed)
+
+- `rmmagent -m nixmeshnodeid` returns the literal string `"error getting meshnodeid"` on failure rather than an
+  empty value (`agent_unix.go:428`). Without validation that would have been passed straight to `--meshnodeid`
+  and recorded silently against the agent. The node id is now shape-validated before use.
+- The validation regex was initially written unquoted inside `[[ =~ ]]`, where bash expanded `$_` inside the
+  character class and rejected every valid id. Caught by testing the regex rather than eyeballing it; the
+  pattern now lives in a variable.
+
+### Side branch: `repo-url-doc-fixes` (off `main`, separate PR)
+
+Repo-wide audit requested mid-session. Everything below was verified against the live endpoints, not assumed:
+
+- `install-tacticalrmm-agent-windows.ps1` header usage fetched `install-trmm-agent-windows.ps1` → **404**
+  (the same class of bug as the Linux one fixed on the TRMM branch).
+- `install-sqlserver-linux.sh` pointed at `sql-server-linux-backups/**main**/install.sh` → **404**; that repo's
+  default branch is **master**. Three occurrences, two of them printed to the operator at the end of a run.
+- README documented `ZabbixVersion` = `7.4.0` for Windows, but **no 7.4.0 MSI exists on the Zabbix CDN** — the
+  documented value fails at download. Changed to `7.4.13` and documented why Linux (major.minor, selects the apt
+  repo) and Windows (exact x.y.z, downloads that MSI) differ.
+
+Checked and found healthy: all 11 shell scripts parse and are shellcheck-clean at warning level; both PowerShell
+scripts parse; Zabbix Linux repo URL patterns and the Windows MSI pattern resolve; the Windows MSI signature
+check is present. Non-issues: `PROXY_MODE`/`DB_TYPE` in `install-zabbix-proxy.sh` are vestigial constants
+documenting hardcoded choices (the config writes `ProxyMode=0` literally) — cosmetic only; SC2076 in
+`migrate-ufw-to-iptables.sh` is a literal substring match, which is the intended behaviour.
 
 ## Completed
 
