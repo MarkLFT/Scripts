@@ -35,10 +35,26 @@ The installer adds the official Zabbix apt repository, so minor/patch updates **
 ```bash
 sudo apt-get update
 sudo apt-get install --only-upgrade 'zabbix-proxy*' 'zabbix-sql-scripts'
-sudo systemctl restart zabbix-proxy-sqlite3   # or zabbix-proxy-mysql / -pgsql to match your DB
+sudo systemctl restart zabbix-proxy
 ```
 
 To move to a **new major version** (e.g. 7.0 → 7.4), the repository definition itself must change. Re-run the installer and enter the new version when prompted — it adds the new repo and upgrades in place.
+
+> The systemd unit is **`zabbix-proxy`** whichever database backend you chose — all three packages (`zabbix-proxy-sqlite3`, `-mysql`, `-pgsql`) ship the same `zabbix-proxy.service`. There is no `zabbix-proxy-sqlite3.service`.
+
+##### ICMP checks need fping
+
+The proxy uses `fping` for all `icmpping*` items, and Zabbix looks for it at `/usr/sbin/fping` by default — but Debian and Ubuntu install it to `/usr/bin/fping`. The installer now adds the package and writes the detected path into the config.
+
+Proxies built before that change have neither, so **every ping check behind them fails silently** while the log fills with `At least one of '/usr/sbin/fping', '/usr/sbin/fping6' must exist`. To check and fix an existing proxy:
+
+```bash
+command -v fping; grep -E '^Fping' /etc/zabbix/zabbix_proxy.conf   # both empty = affected
+
+sudo apt-get install -y fping
+printf '\nFpingLocation=/usr/bin/fping\nFping6Location=/usr/bin/fping6\n' | sudo tee -a /etc/zabbix/zabbix_proxy.conf
+sudo systemctl restart zabbix-proxy
+```
 
 ### Zabbix Agent
 
