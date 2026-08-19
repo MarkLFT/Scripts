@@ -170,6 +170,8 @@ The agent binary is compiled from the official [amidaware/rmmagent](https://gith
 
 Compilation takes a few minutes on first run — this is normal.
 
+Both the **Go toolchain** and the **agent source** are fetched by this script with retry and backoff before the community script runs. The community script fetches each with a single unretried `wget -q` under `set -e`, so one transient HTTP error aborts the whole build — and because `-q` also suppresses wget's error text, the failure appears only as a bare exit code (`8` = server returned an HTTP error). Pre-installing Go makes the community script's `go_install()` skip its own download, and if go.dev is unreachable from the host the distro `golang-go` package is used instead (rmmagent needs only Go 1.20). If Go is already installed, both scripts leave it alone.
+
 > **Note:** This script targets the **community (free) licence**. Prebuilt Linux and macOS agents require a Tier 1 sponsorship (see [code signing](https://docs.tacticalrmm.com/code_signing/)), so compiling from source is the supported route here.
 >
 > **Auth Token (Linux only):** In TacticalRMM go to Agents → Install Agent → select Windows → Manual installation

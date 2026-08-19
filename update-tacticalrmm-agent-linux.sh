@@ -196,6 +196,73 @@ export GOPATH="${GOPATH:-$HOME/go}"
 mkdir -p "$GOCACHE" "$GOPATH" 2>/dev/null || true
 log_info "Build env: HOME=$HOME GOCACHE=$GOCACHE"
 
+# Go toolchain. The pinned community script installs Go itself, but its download
+# is a single unretried `wget -q` under `set -e`: any transient HTTP error aborts
+# the entire build instantly, and `-q` suppresses wget's error text as well as its
+# output, so the failure surfaces only as a bare exit code (observed as exit 8 on
+# a new Debian 13 host — go.dev redirects to dl.google.com, and that redirect is
+# what fails). Its `go_install()` is guarded by `command -v go`, so installing Go
+# here first skips that download entirely. Same hardening as the source pre-fetch.
+ensure_go() {
+    if command -v go >/dev/null 2>&1; then
+        log_ok "Go already present: $(go version 2>/dev/null | awk '{print $3}')"
+        return 0
+    fi
+
+    local script="$1" version go_arch url tarball attempt
+
+    # Take the version from the checksum-verified community script so the two
+    # cannot drift apart; fall back to its current pin if that line ever moves.
+    version=$(grep -oE '^go_version="[0-9.]+"' "$script" 2>/dev/null | head -1 | cut -d'"' -f2)
+    [[ -n "$version" ]] || version="1.26.1"
+
+    case "$(uname -m)" in
+        x86_64)    go_arch="amd64"  ;;
+        aarch64)   go_arch="arm64"  ;;
+        armv6l)    go_arch="armv6l" ;;
+        i386|i686) go_arch="386"    ;;
+        *) log_warn "Unknown architecture $(uname -m) — letting the community script install Go"; return 0 ;;
+    esac
+    url="https://go.dev/dl/go${version}.linux-${go_arch}.tar.gz"
+    tarball="${TMPDIR_WORK}/golang.tar.gz"
+
+    log_info "Installing Go ${version} for ${go_arch} with retries..."
+    for attempt in 1 2 3 4 5; do
+        if curl -fsSL "$url" -o "$tarball" 2>/dev/null && [[ -s "$tarball" ]]; then
+            rm -rf /usr/local/go
+            if tar -xzf "$tarball" -C /usr/local/ 2>/dev/null; then
+                # Symlink into /usr/local/bin as well as exporting PATH: that
+                # directory is on sudo's secure_path, so the toolchain is still
+                # found in a stripped environment where an /etc/profile export
+                # (which is all the community script writes) would not be read.
+                ln -sf /usr/local/go/bin/go /usr/local/bin/go
+                export PATH="/usr/local/go/bin:$PATH"
+                log_ok "Go installed: $(go version 2>/dev/null | awk '{print $3}')"
+                return 0
+            fi
+            log_warn "Go archive downloaded but did not extract — retrying in $((attempt*8))s..."
+        else
+            log_warn "Go download attempt ${attempt}/5 failed — retrying in $((attempt*8))s..."
+        fi
+        sleep $((attempt*8))
+    done
+
+    # The distro toolchain is a legitimate fallback, not a downgrade: rmmagent's
+    # go.mod requires only go 1.20, and Debian 12/13 and Ubuntu 22.04/24.04 all
+    # package something newer. Worth trying before giving up on the whole build.
+    log_warn "Could not download Go from go.dev — falling back to the distro package..."
+    apt-get install -y -q golang-go >/dev/null 2>&1
+    if command -v go >/dev/null 2>&1; then
+        log_ok "Go installed from apt: $(go version 2>/dev/null | awk '{print $3}')"
+        return 0
+    fi
+
+    die "Could not install a Go toolchain — the agent cannot be compiled.
+     Check outbound access to https://go.dev and https://dl.google.com from this host
+     (wget -O /dev/null https://go.dev/dl/go${version}.linux-${go_arch}.tar.gz),
+     or install Go manually (apt-get install golang-go) and re-run."
+}
+
 # =============================================================================
 # UPDATE
 # =============================================================================
@@ -219,6 +286,8 @@ if [[ "$ACTUAL_SHA256" != "$COMMUNITY_SHA256" ]]; then
 fi
 log_ok "Community script verified (SHA-256 matches pin)"
 chmod +x "$COMMUNITY_SCRIPT"
+
+ensure_go "$COMMUNITY_SCRIPT"
 
 # Source tarball that the community script compiles from. Its own download is a
 # single `wget -q` with no retries under `set -e`, so any transient HTTP error
