@@ -8,7 +8,7 @@ Track of current and recent work for session continuity.
 
 ## Previous Work
 
-**Branch `trmm-linux-no-mesh` — drop MeshCentral from the TRMM Linux agent installer, pin the community script.** Code complete; **UNTESTED on a host** (see Blockers).
+**Branch `trmm-linux-no-mesh` — drop MeshCentral from the TRMM Linux agent installer, pin the community script.** Merged. **Verified on a real host 2026-08-19** — a clean install completed end-to-end on a Debian 13 cloud server and the native web terminal connects, so the mesh-free design is proven in practice (see Host verification below; only the updater remains unexercised on that host).
 
 ### Root cause (2026-08-02)
 
@@ -78,14 +78,28 @@ carry the same pin and must be re-pinned together.
 - Guard unit tests (8/8) against the shipped `patch_community_script`: applies at exactly 1 match, aborts at
   0 matches (re-patch) and at 2 matches (ambiguous).
 
-**Still outstanding — needs the real Debian host** (nothing below can be done off-host):
+### Host verification (2026-08-19, Debian 13 cloud server)
 
-1. Registration against the live TRMM server and the systemd unit (`systemctl status tacticalagent` active).
-2. Agent appears in TRMM under the right client/site/type.
-3. Web terminal connects from the TRMM UI — if not, check the **Use Terminal** role permission first.
-4. `update-tacticalrmm-agent-linux.sh` rebuilds and restarts cleanly on the same host with the pinned script.
+A full interactive install completed successfully on a real host, after the Go pre-install fix below (the first
+attempt on this host failed at the Go download with exit 8). Three of the four outstanding items are now closed:
 
-Then update this section to fully verified with the version it landed on.
+1. **Registration and the systemd unit — VERIFIED.** The installer exits non-zero at every one of these steps,
+   so a successful run is proof: registration succeeded, `systemctl enable`/`restart` succeeded, and the final
+   Verifying section confirmed `tacticalagent` active. Client `Resort Manager` (ID 1), site `Cloud` (ID 4),
+   type `server`, amd64, no mesh.
+2. **Agent appears in TRMM — VERIFIED (presence); placement inferred.** The web terminal was driven from the
+   TRMM UI against this agent, which is only reachable by selecting it there, so the agent is definitely
+   present and healthy in the console. The specific client/site/type values are still inference from the
+   registration arguments rather than something anyone read back off the screen.
+3. **Web terminal — VERIFIED 2026-08-19.** Connects from the TRMM UI. This is the payoff for dropping
+   MeshCentral: the native terminal (TRMM v1.5.0+, agent 2.11.0+) covers shell access on headless servers
+   with no mesh agent installed, which was decision 1 on this branch. The **Use Terminal** role permission
+   needed no intervention.
+4. **`update-tacticalrmm-agent-linux.sh` on this host — STILL UNCONFIRMED.** The same `ensure_go()` fix was
+   applied to it, but it has not been run against this host since.
+
+The agent version this host landed on was not recorded here — read it from `/usr/local/bin/rmmagent -version`
+and fill it in when convenient.
 
 ### Bugs caught while building this (both fixed)
 
@@ -148,7 +162,7 @@ documenting hardcoded choices (the config writes `ProxyMode=0` literally) — co
 
 ## Completed
 
-- 2026-08-19: **Fixed TRMM Linux agent install failing with exit 8 on a new Debian 13 cloud server.** Root cause: the pinned community script's `go_install()` downloads the Go toolchain with a single unretried `wget -q ... https://go.dev/dl/go1.26.1.linux-amd64.tar.gz` under `set -euo pipefail`. go.dev 302-redirects to dl.google.com; that request returned an HTTP error from the new host, wget exited 8, the community script's EXIT trap printed "Cleaning up temporary files..." and the run aborted before compiling. `-q` suppresses wget's error message as well as its output, which is why the failure showed as a bare exit code with no cause. **This is the identical failure mode already fixed for the agent *source* tarball on 2026-06-29 (commit 1a846c6) — the Go download one step earlier was left unhardened.** Verified from upstream source, not assumed: the tarball itself is fine (HTTP 200, 66.8 MB), and `go_install()` is guarded by `command -v go`, so pre-installing Go skips its download entirely. Fix: added `ensure_go()` to **both** `install-tacticalrmm-agent-linux.sh` and `update-tacticalrmm-agent-linux.sh` — no-op if Go is present; otherwise reads the version from the checksum-verified community script (so the two cannot drift), fetches with 5 attempts and backoff, extracts to `/usr/local/go`, and symlinks `/usr/local/bin/go` (that dir is on sudo's `secure_path`, so it survives the stripped environment of the systemd-run bootstrap, where the community script's `/etc/profile` export would not be read). Falls back to the distro `golang-go` package — legitimate, since rmmagent's `go.mod` requires only go 1.20 and Debian 12/13 + Ubuntu 22.04/24.04 all package newer — and only then dies, with the diagnostic wget command in the message. Tested: short-circuit path, version parse against the pin (1.26.1), URL resolution, and the full retry → apt fallback → die chain. `bash -n` clean on both.
+- 2026-08-19: **Fixed TRMM Linux agent install failing with exit 8 on a new Debian 13 cloud server.** Root cause: the pinned community script's `go_install()` downloads the Go toolchain with a single unretried `wget -q ... https://go.dev/dl/go1.26.1.linux-amd64.tar.gz` under `set -euo pipefail`. go.dev 302-redirects to dl.google.com; that request returned an HTTP error from the new host, wget exited 8, the community script's EXIT trap printed "Cleaning up temporary files..." and the run aborted before compiling. `-q` suppresses wget's error message as well as its output, which is why the failure showed as a bare exit code with no cause. **This is the identical failure mode already fixed for the agent *source* tarball on 2026-06-29 (commit 1a846c6) — the Go download one step earlier was left unhardened.** Verified from upstream source, not assumed: the tarball itself is fine (HTTP 200, 66.8 MB), and `go_install()` is guarded by `command -v go`, so pre-installing Go skips its download entirely. Fix: added `ensure_go()` to **both** `install-tacticalrmm-agent-linux.sh` and `update-tacticalrmm-agent-linux.sh` — no-op if Go is present; otherwise reads the version from the checksum-verified community script (so the two cannot drift), fetches with 5 attempts and backoff, extracts to `/usr/local/go`, and symlinks `/usr/local/bin/go` (that dir is on sudo's `secure_path`, so it survives the stripped environment of the systemd-run bootstrap, where the community script's `/etc/profile` export would not be read). Falls back to the distro `golang-go` package — legitimate, since rmmagent's `go.mod` requires only go 1.20 and Debian 12/13 + Ubuntu 22.04/24.04 all package newer — and only then dies, with the diagnostic wget command in the message. Tested: short-circuit path, version parse against the pin (1.26.1), URL resolution, and the full retry → apt fallback → die chain. `bash -n` clean on both. **Confirmed working on the Debian 13 host 2026-08-19** — the install that previously died at exit 8 now completes end-to-end.
 
 - 2026-06-29: VERIFIED WORKING end-to-end on a live agent: 2.10.0 -> 2.11.0, service running. Committed the TRMM bootstrap as `trmm-self-update-bootstrap.sh`, updated README (manual vs TRMM-bootstrap usage, with the self-restart/cgroup explanation) and CLAUDE.md structure.
 - 2026-06-29: Found the actual root cause of the exit-1 compile failure (after disproving download/rate-limit and Go-version theories via live diagnostics): the systemd-run transient unit used by the TRMM bootstrap runs with a stripped env and no HOME, so `go build` aborts instantly with "GOCACHE is not defined". Direct build with HOME set succeeds. Fix (commit f3a3612): pin HOME/GOCACHE/GOPATH before compile; drop `--simple` and capture output so real build errors are no longer hidden. go.mod requires go 1.20 (agent has 1.25.6 — version was never the issue).
