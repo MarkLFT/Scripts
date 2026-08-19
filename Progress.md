@@ -8,7 +8,7 @@ Track of current and recent work for session continuity.
 
 ## Previous Work
 
-**Branch `trmm-linux-no-mesh` — drop MeshCentral from the TRMM Linux agent installer, pin the community script.** Merged. **Verified on a real host 2026-08-19** — a clean install completed end-to-end on a Debian 13 cloud server (see Testing status below; two items remain unconfirmed).
+**Branch `trmm-linux-no-mesh` — drop MeshCentral from the TRMM Linux agent installer, pin the community script.** Merged. **Verified on a real host 2026-08-19** — a clean install completed end-to-end on a Debian 13 cloud server and the native web terminal connects, so the mesh-free design is proven in practice (see Host verification below; only the updater remains unexercised on that host).
 
 ### Root cause (2026-08-02)
 
@@ -81,17 +81,20 @@ carry the same pin and must be re-pinned together.
 ### Host verification (2026-08-19, Debian 13 cloud server)
 
 A full interactive install completed successfully on a real host, after the Go pre-install fix below (the first
-attempt on this host failed at the Go download with exit 8). Against the four items that were outstanding:
+attempt on this host failed at the Go download with exit 8). Three of the four outstanding items are now closed:
 
 1. **Registration and the systemd unit — VERIFIED.** The installer exits non-zero at every one of these steps,
    so a successful run is proof: registration succeeded, `systemctl enable`/`restart` succeeded, and the final
    Verifying section confirmed `tacticalagent` active. Client `Resort Manager` (ID 1), site `Cloud` (ID 4),
    type `server`, amd64, no mesh.
-2. **Agent appears in TRMM under the right client/site/type — follows from (1) but not visually confirmed.**
-   Registration is what creates the agent record with those IDs, so it is almost certainly correct; nobody has
-   reported eyeballing it in the TRMM UI. Treat as very likely, not witnessed.
-3. **Web terminal — STILL UNCONFIRMED.** Not exercised. If it does not connect, check the **Use Terminal**
-   role permission first.
+2. **Agent appears in TRMM — VERIFIED (presence); placement inferred.** The web terminal was driven from the
+   TRMM UI against this agent, which is only reachable by selecting it there, so the agent is definitely
+   present and healthy in the console. The specific client/site/type values are still inference from the
+   registration arguments rather than something anyone read back off the screen.
+3. **Web terminal — VERIFIED 2026-08-19.** Connects from the TRMM UI. This is the payoff for dropping
+   MeshCentral: the native terminal (TRMM v1.5.0+, agent 2.11.0+) covers shell access on headless servers
+   with no mesh agent installed, which was decision 1 on this branch. The **Use Terminal** role permission
+   needed no intervention.
 4. **`update-tacticalrmm-agent-linux.sh` on this host — STILL UNCONFIRMED.** The same `ensure_go()` fix was
    applied to it, but it has not been run against this host since.
 
