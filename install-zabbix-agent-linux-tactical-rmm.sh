@@ -102,6 +102,52 @@ send_discord() {
 service_active()    { systemctl is-active --quiet "$1" 2>/dev/null; }
 package_installed() { dpkg -s "$1" &>/dev/null; }
 
+# --- Defer service start during package installs -----------------------------
+# The zabbix-agent2 postinst starts the service, whose ExecStartPre runs
+# `zabbix_agent2 -T` (config test). Any loadable plugin that cannot initialise
+# makes that test exit 1, which fails the postinst and leaves dpkg
+# half-configured — the package is unpacked but never configured, and every
+# later apt call complains until it is cleared.
+#
+# A temporary policy-rc.d telling dpkg not to start services during the install
+# removes that failure mode entirely: we configure the agent and disable the
+# plugins we do not need first, then start it ourselves at the end. It also lets
+# a re-run recover a host already stuck in that half-configured state.
+POLICY_RC_D="/usr/sbin/policy-rc.d"
+POLICY_RC_D_SAVED=""
+POLICY_RC_D_OURS=0
+
+defer_service_start() {
+    if [[ -e "$POLICY_RC_D" ]]; then
+        POLICY_RC_D_SAVED="${POLICY_RC_D}.zabbix-install-$$"
+        mv "$POLICY_RC_D" "$POLICY_RC_D_SAVED" || { warn "Could not set aside existing policy-rc.d"; return 1; }
+    fi
+    if printf '#!/bin/sh\nexit 101\n' > "$POLICY_RC_D" && chmod 0755 "$POLICY_RC_D"; then
+        POLICY_RC_D_OURS=1
+    else
+        warn "Could not install policy-rc.d — the package may try to start the agent during install"
+        # Put back whatever was there before rather than leaving the host bare.
+        [[ -n "$POLICY_RC_D_SAVED" && -e "$POLICY_RC_D_SAVED" ]] && mv "$POLICY_RC_D_SAVED" "$POLICY_RC_D"
+        POLICY_RC_D_SAVED=""
+    fi
+}
+
+# Only ever removes the policy-rc.d we created — a pre-existing one belongs to
+# the host and must survive, including when this runs from the EXIT trap after
+# a path that never deferred anything.
+restore_service_policy() {
+    [[ "$POLICY_RC_D_OURS" -eq 1 ]] || return 0
+    rm -f "$POLICY_RC_D"
+    POLICY_RC_D_OURS=0
+    if [[ -n "$POLICY_RC_D_SAVED" && -e "$POLICY_RC_D_SAVED" ]]; then
+        mv "$POLICY_RC_D_SAVED" "$POLICY_RC_D" || warn "Could not restore the original policy-rc.d"
+        POLICY_RC_D_SAVED=""
+    fi
+}
+
+# Never leave the host with service starts globally disabled, whatever happens.
+trap restore_service_policy EXIT
+
 # --- Gather system info ------------------------------------------------------
 SYS_HOSTNAME=$(hostname -f)
 IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -132,9 +178,15 @@ ACTION=""
 
 if package_installed zabbix-agent2; then
     PREV_VERSION=$(dpkg -s zabbix-agent2 | grep '^Version:' | awk '{print $2}')
+    # Zabbix's Debian/Ubuntu packages carry an epoch, e.g. "1:7.4.13-1+debian13".
+    # Comparing that raw against "7.4" never matches, so the "already on target
+    # version" short-circuit below could never fire and every run — including
+    # every scheduled TacticalRMM run — re-entered the full install path.
+    # Strip the epoch before comparing.
+    PREV_VERSION_CMP="${PREV_VERSION#*:}"
     log "Installed version: $PREV_VERSION"
 
-    if [[ "$PREV_VERSION" == ${ZABBIX_VERSION}* ]]; then
+    if [[ "$PREV_VERSION_CMP" == ${ZABBIX_VERSION}.* || "$PREV_VERSION_CMP" == "${ZABBIX_VERSION}" ]]; then
         if [[ "$FORCE_RUN" == "force" ]]; then
             log "Already on version $ZABBIX_VERSION — force flag set, reconfiguring."
             ACTION="Reconfigured"
@@ -190,8 +242,25 @@ fi
 
 apt-get update -qq
 
+# Hold off service starts for the rest of the run; we start the agent ourselves
+# once its config is written and the unneeded plugins are disabled.
+defer_service_start
+
+# Clear any half-configured state left by a previous failed attempt. With starts
+# deferred this can now succeed where it previously failed on the config test.
+if [[ -n "$(dpkg --audit 2>/dev/null)" ]]; then
+    warn "dpkg has packages in a broken state — reconfiguring before install..."
+    dpkg --configure -a >/dev/null 2>&1 || warn "dpkg --configure -a did not fully succeed"
+fi
+
 log "Installing zabbix-agent2..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::="--force-confold" zabbix-agent2 zabbix-agent2-plugin-*
+# Install the agent ONLY. Loadable plugin packages are installed further down,
+# per detected service. Installing them all (the old `zabbix-agent2-plugin-*`
+# wildcard) breaks the install on any host lacking the matching hardware or
+# libraries: the NVIDIA plugin aborts the agent's own config test with
+# "NVML Shared Library couldn't be found or loaded" on every machine without an
+# NVIDIA driver, which is nearly all of them.
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::="--force-confold" zabbix-agent2
 
 fi # end skip-on-reconfigure
 
@@ -338,6 +407,15 @@ fi
 
 if service_active postgresql; then
     log "  [FOUND] PostgreSQL"; DETECTED_SERVICES+=("PostgreSQL")
+    # Loadable plugin — previously pulled in by the plugin wildcard, now installed
+    # only where PostgreSQL is actually running.
+    if ! package_installed zabbix-agent2-plugin-postgresql; then
+        log "  Installing zabbix-agent2-plugin-postgresql..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::="--force-confold" zabbix-agent2-plugin-postgresql 2>/dev/null \
+            || warn "  Could not install zabbix-agent2-plugin-postgresql"
+    else
+        log "  zabbix-agent2-plugin-postgresql already installed"
+    fi
     cat > "${AGENT_CONF_D}/postgresql.conf" <<'EOF'
 # PostgreSQL - Zabbix Agent 2 Plugin
 # CREATE USER zabbix WITH PASSWORD 'StrongPassword!';
@@ -538,12 +616,28 @@ else
 fi
 
 # --- Enable & restart agent --------------------------------------------------
+# Config is written and unneeded plugins are disabled, so it is safe to let
+# services start again before we bring the agent up.
+restore_service_policy
+
+# Validate the config before starting, so a failure reports the agent's own
+# message rather than a bare systemd exit code.
+log "Validating configuration..."
+if ! CONFIG_TEST=$(zabbix_agent2 -T -c "$AGENT_CONF" 2>&1); then
+    echo "$CONFIG_TEST" | sed 's/^/    /'
+    send_discord "❌ Zabbix Agent Config Invalid" \
+        "**Host:** \`$SYS_HOSTNAME\`\n**IP:** \`$IP_ADDRESS\`\n**Reason:** zabbix_agent2 -T failed — see script output" 15158332
+    echo "ERROR: zabbix_agent2 configuration test failed — not starting the agent"; exit 1
+fi
+log "Configuration valid"
+
 log "Restarting zabbix-agent2..."
 systemctl enable zabbix-agent2 --quiet
 systemctl restart zabbix-agent2
 sleep 2
 
 if ! systemctl is-active --quiet zabbix-agent2; then
+    systemctl status zabbix-agent2 --no-pager 2>&1 | tail -15 | sed 's/^/    /'
     send_discord "❌ Zabbix Agent Failed to Start" \
         "**Host:** \`$SYS_HOSTNAME\`\n**IP:** \`$IP_ADDRESS\`\n**Version:** \`$NEW_VERSION\`\n**Proxy:** \`$ZABBIX_PROXY\`" 15158332
     echo "ERROR: zabbix-agent2 failed to start"; exit 1
