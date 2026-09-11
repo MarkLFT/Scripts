@@ -32,13 +32,57 @@ AGENT_CONF_D="/etc/zabbix/zabbix_agent2.d"
 # --- Input validation --------------------------------------------------------
 # SECURITY: Validate all arguments before use in URLs, config files, or commands.
 
+# TacticalRMM leaves an argument completely untouched when it cannot resolve the
+# variable, so a literal "{{...}}" arriving here means the custom field or Key
+# Store entry does not exist at all. An empty value means the opposite: the
+# field exists but has no value for this agent's site. The two need different
+# fixes, so report them differently rather than as one generic "required".
+unresolved_var() { [[ "$1" == *'{{'*'}}'* ]]; }
+
+if [[ $# -eq 0 ]]; then
+    echo "ERROR: No arguments were passed."
+    echo "       In TacticalRMM the script's Arguments field must be populated, in order:"
+    echo "         {{site.ZabbixProxy}} {{site.ZabbixServer}} {{global.DiscordWebhook}} \\"
+    echo "         {{global.ZabbixVersion}} {{global.ZabbixMSSQLPassword}} {{site.MSSQLSAPassword}} \\"
+    echo "         {{agent.ZabbixHostName}}"
+    exit 1
+fi
+
+for pair in "ZabbixProxy:${ZABBIX_PROXY}:Site" \
+            "ZabbixServer:${ZABBIX_SERVER}:Site" \
+            "ZabbixVersion:${ZABBIX_VERSION}:Global"; do
+    var_name="${pair%%:*}"
+    var_rest="${pair#*:}"
+    var_value="${var_rest%:*}"
+    var_scope="${var_rest##*:}"
+
+    if unresolved_var "$var_value"; then
+        echo "ERROR: TacticalRMM did not substitute ${var_name} — it arrived as: ${var_value}"
+        if [[ "$var_scope" == "Global" ]]; then
+            echo "       That means no '${var_name}' entry exists in the Key Store."
+            echo "       Create it in: Settings -> Global Settings -> Key Store"
+        else
+            echo "       That means no '${var_name}' custom field is defined for ${var_scope}s."
+            echo "       Create it in: Settings -> Global Settings -> Custom Fields (model: ${var_scope})"
+        fi
+        exit 1
+    fi
+done
+
 if [[ -z "$ZABBIX_PROXY" || -z "$ZABBIX_SERVER" ]]; then
-    echo "ERROR: ZabbixProxy and ZabbixServer are required."
+    [[ -z "$ZABBIX_PROXY"  ]] && echo "ERROR: ZabbixProxy is empty."
+    [[ -z "$ZABBIX_SERVER" ]] && echo "ERROR: ZabbixServer is empty."
+    echo "       The Site custom field exists but has no value for this agent's site,"
+    echo "       so TacticalRMM substituted an empty string."
+    echo "       Set it in: Clients -> <client> -> Sites -> <site> -> Edit -> Custom Fields"
+    echo "       Both ZabbixProxy and ZabbixServer must be set on every site you deploy to."
     exit 1
 fi
 
 if [[ -z "$ZABBIX_VERSION" ]]; then
-    echo "ERROR: ZabbixVersion global variable is not set."
+    echo "ERROR: ZabbixVersion is empty."
+    echo "       Set it in: Settings -> Global Settings -> Key Store (e.g. 7.4)"
+    echo "       Linux takes major.minor only — 7.4, not 7.4.13."
     exit 1
 fi
 
