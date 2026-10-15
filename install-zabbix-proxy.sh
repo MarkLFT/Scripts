@@ -245,9 +245,28 @@ log_ok "Repository added"
 
 # --- Install packages --------------------------------------------------------
 print_section "Installing Packages"
-log_info "Installing $PROXY_PACKAGE..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$PROXY_PACKAGE"
-log_ok "Package installed"
+# fping is required for ICMP checks (icmpping / icmppingsec / icmppingloss).
+# Without it every ping item on every host behind this proxy fails as
+# "unsupported", and the proxy logs the missing-binary error once a second.
+log_info "Installing $PROXY_PACKAGE and fping..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$PROXY_PACKAGE" fping
+log_ok "Packages installed"
+
+# Locate fping rather than assuming a path: Debian/Ubuntu ship it in /usr/bin,
+# while Zabbix defaults to /usr/sbin/fping. Guessing wrong is exactly what makes
+# ICMP checks fail silently.
+FPING_BIN=$(command -v fping 2>/dev/null || true)
+FPING6_BIN=$(command -v fping6 2>/dev/null || true)
+FPING_BLOCK=""
+if [[ -n "$FPING_BIN" ]]; then
+    FPING_BLOCK="FpingLocation=${FPING_BIN}"
+    log_ok "fping found at $FPING_BIN"
+else
+    log_warn "fping not found — ICMP (ping) checks will not work on this proxy"
+fi
+if [[ -n "$FPING6_BIN" ]]; then
+    FPING_BLOCK="${FPING_BLOCK}${FPING_BLOCK:+$'\n'}Fping6Location=${FPING6_BIN}"
+fi
 
 # --- Prepare SQLite directory ------------------------------------------------
 print_section "Preparing Database"
@@ -327,6 +346,8 @@ ProxyBufferMode=hybrid
 ProxyMemoryBufferSize=64M
 
 Timeout=10
+
+${FPING_BLOCK}
 EOF
 
 chown root:zabbix "$PROXY_CONF"
@@ -335,6 +356,16 @@ log_ok "Configuration written to $PROXY_CONF"
 
 # --- Enable and start --------------------------------------------------------
 print_section "Starting Service"
+
+# Validate before starting so a config error reports the proxy's own message
+# rather than a bare systemd exit code.
+log_info "Validating configuration..."
+if ! CONFIG_TEST=$(zabbix_proxy -T -c "$PROXY_CONF" 2>&1); then
+    echo "$CONFIG_TEST" | sed 's/^/      /'
+    die "Configuration test failed — not starting the proxy"
+fi
+log_ok "Configuration valid"
+
 systemctl daemon-reload
 systemctl enable zabbix-proxy --quiet
 systemctl restart zabbix-proxy
